@@ -198,17 +198,24 @@ Exit codes:
             if (!agentGatewayUrl) throw new Error('Agent gateway URL is not configured');
             streamed = await streamAgentEventsViaWebSocket({
               gatewayUrl: agentGatewayUrl,
+              getAuth: getAgentStreamAuthInfo,
               json: options.json,
               // A quiet stream is checked against the run status rather than
               // treated as finished or failed — a long tool call can be silent.
               onStall: () => probeRunOutcome(client, operationId, { json: options.json }),
               operationId,
+              readHistory: (cursor, signal) =>
+                client.aiAgent.getOperationStreamHistory.query({ operationId, cursor }, { signal }),
               serverUrl,
               token,
               tokenType,
               verbose: options.verbose,
             });
           } catch (error) {
+            if (error instanceof Error && error.name === 'AgentStreamHistoryError') {
+              log.error(error.message);
+              return { kind: 'unknown' };
+            }
             // The live stream (gateway WebSocket) dropped before the run finished —
             // the run may still be executing server-side, in --json mode too.
             // Fall back to polling the run status until it reaches a terminal state.
