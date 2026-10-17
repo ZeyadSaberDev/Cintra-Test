@@ -310,4 +310,16 @@ describe('useResourceAccess', () => {
 
     expect(result.current).toMatchObject({ canEditResource: true, canUseResource: true });
   });
+
+  it('reports when the confirming request was issued', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    testState.data = record({});
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+    expect(result.current.confirmedAt).toBeUndefined();
+
+    await revalidate(record({}));
+    rerender();
+    expect(result.current.confirmedAt).toBe(1000);
+    vi.restoreAllMocks();
+  });
 });

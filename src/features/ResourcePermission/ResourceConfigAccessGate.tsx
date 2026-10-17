@@ -1,7 +1,7 @@
 'use client';
 
 import { toast } from '@lobehub/ui';
-import { memo, type ReactNode, useEffect, useRef } from 'react';
+import { memo, type ReactNode, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
@@ -25,13 +25,20 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
     const { t } = useTranslation('chat');
     const navigate = useWorkspaceAwareNavigate();
     const hasRedirected = useRef(false);
+    const hasRequestedCheck = useRef(false);
+    // Only a check issued after this gate mounted may justify a redirect: a
+    // denial confirmed earlier in the session (e.g. by a sidebar row) can
+    // predate a grant made since.
+    const [mountedAt] = useState(() => Date.now());
     const { allowed: canEditContent } = usePermission('edit_own_content');
     const {
       accessError,
       canEditResource,
       canManageResource,
+      confirmedAt,
       isAccessConfirmed,
       isAccessResolved,
+      isValidating,
       retryAccess,
     } = useResourceAccess(resourceType, resourceId);
 
@@ -44,7 +51,19 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
       accessReady &&
       canEditContent &&
       (requiredAccess === 'manage' ? canManageResource : canEditResource);
-    const denialConfirmed = accessReady && isAccessConfirmed && !canConfigure;
+    const isBlocked = accessReady && !canConfigure;
+    const isFreshlyConfirmed =
+      isAccessConfirmed && confirmedAt !== undefined && confirmedAt >= mountedAt;
+    const denialConfirmed = isBlocked && isFreshlyConfirmed;
+
+    // A deduped mount revalidation may never re-check a session-confirmed
+    // denial, which would leave the gate waiting; request the check once.
+    useEffect(() => {
+      if (!isBlocked || isFreshlyConfirmed || isValidating || accessError) return;
+      if (hasRequestedCheck.current) return;
+      hasRequestedCheck.current = true;
+      void retryAccess();
+    }, [accessError, isBlocked, isFreshlyConfirmed, isValidating, retryAccess]);
 
     useEffect(() => {
       if (!denialConfirmed || accessError || hasRedirected.current) return;
@@ -90,7 +109,9 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
         data={canConfigure ? true : undefined}
         error={accessError}
         errorVariant={'page'}
-        isLoading={!canConfigure && !accessError}
+        // SWR keeps the previous error while Retry revalidates; show progress
+        // then instead of a still-clickable Retry.
+        isLoading={!canConfigure && (!accessError || isValidating)}
         loading={loading ?? <SurfaceSkeleton variant={'form'} />}
         onRetry={() => void retryAccess()}
       >

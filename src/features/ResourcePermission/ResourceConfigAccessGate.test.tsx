@@ -11,7 +11,11 @@ const mocks = vi.hoisted(() => ({
   canEditContent: true,
   canEditResource: false,
   canManageResource: false,
+  // When the confirming request was issued; Infinity = after the gate mounted.
+  confirmedAt: Number.POSITIVE_INFINITY as number | undefined,
+  isValidating: false,
   navigate: vi.fn(),
+  retryAccess: vi.fn(),
   toastInfo: vi.fn(),
 }));
 
@@ -57,10 +61,12 @@ vi.mock('./useResourceAccess', () => ({
     accessError: mocks.accessError,
     canEditResource: mocks.canEditResource,
     canManageResource: mocks.canManageResource,
+    confirmedAt: mocks.confirmedAt,
     isAccessConfirmed: mocks.accessConfirmed,
     isAccessResolved: mocks.accessResolved,
     isLoading: false,
-    retryAccess: vi.fn(),
+    isValidating: mocks.isValidating,
+    retryAccess: mocks.retryAccess,
   }),
 }));
 
@@ -90,6 +96,8 @@ describe('ResourceConfigAccessGate', () => {
     mocks.accessConfirmed = true;
     mocks.accessError = undefined;
     mocks.accessResolved = true;
+    mocks.confirmedAt = Number.POSITIVE_INFINITY;
+    mocks.isValidating = false;
   });
 
   it('uses workspace-aware navigation when returning a chat-only collaborator to chat', async () => {
@@ -218,5 +226,48 @@ describe('ResourceConfigAccessGate', () => {
     const { getByText } = renderGate('agent', <div>Profile loading</div>);
 
     expect(getByText('Agent config')).toBeInTheDocument();
+  });
+
+  // Regression: a view-only record a sidebar row confirmed earlier this session
+  // stayed confirmed, so after a same-session grant the gate redirected before
+  // its own re-check could return the new access.
+  it('does not redirect on a denial confirmed before the gate mounted', async () => {
+    mocks.confirmedAt = 0;
+
+    const { getByText, rerender } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Profile loading')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.retryAccess).toHaveBeenCalledTimes(1));
+    expect(mocks.navigate).not.toHaveBeenCalled();
+
+    // The re-check returns the new grant.
+    mocks.confirmedAt = Number.POSITIVE_INFINITY;
+    mocks.canEditResource = true;
+    rerender(
+      <ResourceConfigAccessGate
+        loading={<div>Profile loading</div>}
+        redirectPath="/agent/agent-1"
+        resourceId="agent-1"
+        resourceType="agent"
+      >
+        <div>Agent config</div>
+      </ResourceConfigAccessGate>,
+    );
+
+    expect(getByText('Agent config')).toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  // Regression: SWR keeps the previous error while Retry revalidates, so the
+  // blocked gate kept an enabled Retry with no progress feedback.
+  it('shows progress instead of the error while a blocked retry is in flight', () => {
+    mocks.accessConfirmed = false;
+    mocks.accessError = new Error('network');
+    mocks.isValidating = true;
+
+    const { getByText, queryByText } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Profile loading')).toBeInTheDocument();
+    expect(queryByText('Access error')).not.toBeInTheDocument();
   });
 });

@@ -14,8 +14,11 @@ import { isTrpcErrorCode } from '@/utils/trpcError';
  * Keyed by the cache scope (user + workspace) too: switching identity swaps
  * the persisted partition without a reload, and a confirmation earned in one
  * scope must not vouch for another scope's cached record of the same id.
+ *
+ * The value is when the newest confirming request was issued, so a consumer
+ * can tell a confirmation it waited for from one earned earlier in the session.
  */
-const confirmedThisSession = new Set<string>();
+const confirmedThisSession = new Map<string, number>();
 
 /**
  * Resources whose latest refresh this session the server denied (see
@@ -53,6 +56,7 @@ export const fetchGeneralAccess = async (
   // it settles.
   const scope = getCacheScope();
   const key = sessionKey(scope, resourceType, resourceId);
+  const issuedAt = Date.now();
   let result: Awaited<ReturnType<typeof resourcePermissionService.getGeneralAccess>>;
   try {
     result = await resourcePermissionService.getGeneralAccess(resourceType, resourceId);
@@ -70,7 +74,7 @@ export const fetchGeneralAccess = async (
   // previous user's answer would land in (and persist to) the new user's
   // partition. Reject it; the scope reload revalidates under the new identity.
   if (getCacheScope() !== scope) throw new AccessScopeChangedError();
-  confirmedThisSession.add(key);
+  confirmedThisSession.set(key, Math.max(issuedAt, confirmedThisSession.get(key) ?? 0));
   deniedThisSession.delete(key);
   return result;
 };
@@ -92,7 +96,8 @@ export const resetConfirmedAccessForTest = () => {
  *
  * The access record is persisted (local cache tier), so after a reload edit/use
  * checks resolve from the last server-confirmed value while it revalidates.
- * `isAccessConfirmed` is only true once the current session has re-fetched it.
+ * `isAccessConfirmed` is only true once the current session has re-fetched it;
+ * `confirmedAt` is when that confirming request was issued.
  * Use it before acting on a denial (redirects); `canManageResource` already
  * requires it, so a cached manager grant the user has since lost never shows
  * management controls.
@@ -129,6 +134,7 @@ export const useResourceAccess = (
     canManageResource: !enabled || (isAccessConfirmed && data?.canManage === true),
     canUseResource:
       !enabled || (!isDenied && (!data ? true : data.canManage || data.accessLevel !== 'view')),
+    confirmedAt: isAccessConfirmed && enabled ? confirmedThisSession.get(key) : undefined,
     isAccessConfirmed,
     isAccessResolved: !enabled || isDenied || !!data,
     isLoading,
