@@ -149,6 +149,36 @@ describe('createCacheProvider — tiering', () => {
     expect(await localDataCache.entriesByScope('s1')).toEqual([]);
   });
 
+  // Regression: rows written to IndexedDB before the sanitizer existed carry the
+  // same version and never expire, so hydration must clean them too.
+  it('hydrates legacy IndexedDB rows without their request flags or failed state', async () => {
+    const scope = { value: 's1' };
+    await localDataCache.set(
+      buildLocalDataKey('s1', 'MSGS:ok'),
+      { data: [1], error: { message: 'stale' }, isLoading: false, isValidating: true },
+      '1.0.0',
+    );
+    await localDataCache.set(
+      buildLocalDataKey('s1', 'MSGS:failed'),
+      { error: { message: 'Resource not found' }, isLoading: true, isValidating: true },
+      '1.0.0',
+    );
+    await localDataCache.set(buildLocalDataKey('s1', 'MSGS:clean'), { data: [2] }, '1.0.0');
+
+    const { provider } = buildProvider(scope);
+    await provider.hydrateScope?.();
+
+    expect(provider().get('MSGS:ok')).toEqual({ data: [1] });
+    expect(provider().has('MSGS:failed')).toBe(false);
+    expect(provider().get('MSGS:clean')).toEqual({ data: [2] });
+
+    await until(async () => (await localDataCache.entriesByScope('s1')).length === 2);
+    const rows = Object.fromEntries(
+      (await localDataCache.entriesByScope('s1')).map((e) => [e.key, e.data]),
+    );
+    expect(rows).toEqual({ 'MSGS:clean': { data: [2] }, 'MSGS:ok': { data: [1] } });
+  });
+
   // Regression: the resource access record was memory-only, so every reload of
   // an Agent / Group profile page showed a full-form skeleton until the
   // permission request settled. It now restores synchronously on first paint.

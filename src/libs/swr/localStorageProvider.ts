@@ -119,18 +119,22 @@ const matchesPattern = (key: string, patterns: string[]): boolean =>
  * error page on the next boot before the key ever revalidates. Only settled
  * `data` survives; a state without it is not persisted at all.
  */
-const SWR_STATE_FIELDS = ['data', 'error', 'isLoading', 'isValidating'];
+const TRANSIENT_STATE_FIELDS = ['error', 'isLoading', 'isValidating'];
 
 const toPersisted = (value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
-  if (!SWR_STATE_FIELDS.some((field) => field in value)) return value;
+  const hasTransient = TRANSIENT_STATE_FIELDS.some((field) => field in value);
+  if (!hasTransient && !('data' in value)) return value;
+  if ((value as { data?: unknown }).data === undefined) return undefined;
+  // Already clean: keep the same object so callers can tell nothing changed.
+  if (!hasTransient) return value;
   const {
     error: _error,
     isLoading: _isLoading,
     isValidating: _isValidating,
     ...rest
   } = value as Record<string, unknown>;
-  return rest.data === undefined ? undefined : rest;
+  return rest;
 };
 
 /**
@@ -301,9 +305,24 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
       // and a version bump still evicts everyone. TTL governs the localStorage
       // tier only (see `loadLocal`).
       const valid = migratedEntries.filter((e) => e.version === version);
+      // Rows written before `toPersisted` existed may still carry request flags
+      // or a failed fetch's error: restore only their settled data, and drop
+      // (or rewrite) the stored row so it is not re-read on every boot.
+      const restored: [string, unknown][] = [];
+      for (const entry of valid) {
+        const data = toPersisted(entry.data);
+        if (data === undefined) {
+          void localDataCache.delete(buildLocalDataKey(scope, entry.key));
+          continue;
+        }
+        if (data !== entry.data) {
+          void localDataCache.set(buildLocalDataKey(scope, entry.key), data, version);
+        }
+        restored.push([entry.key, data]);
+      }
       // Map may have changed scope while we awaited; only apply if still current.
       if (cacheMapInstance && getScope() === scope && hydrationEpoch === epoch) {
-        cacheMapInstance.hydrate(valid.map((e) => [e.key, e.data]));
+        cacheMapInstance.hydrate(restored);
         hydratedScope = scope;
       }
       succeeded = true;
