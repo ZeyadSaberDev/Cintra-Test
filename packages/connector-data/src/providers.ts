@@ -1,7 +1,9 @@
 /** Provider identifiers with a first-party Connector Data client. */
 export const CONNECTOR_DATA_PROVIDER_IDS = [
+  'confluence',
   'github',
   'gmail',
+  'jira',
   'linear',
   'notion',
   'twitter',

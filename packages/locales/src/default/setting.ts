@@ -3557,15 +3557,16 @@ When I am ___, I need ___
   'workspace.onboarding.flow.connectApps.apps.google-drive':
     "Lets the assistant find and read the team's shared files",
   'workspace.onboarding.flow.connectApps.apps.jira':
-    "Lets the assistant read and work on the team's tickets and sprints",
+    "Reads the team's projects and recent issues to learn what you build and who owns what",
   'workspace.onboarding.flow.connectApps.apps.confluence':
-    "Lets the assistant look up the team's pages in Confluence",
+    "Reads the team's shared pages to learn your projects, processes and decisions",
   'workspace.onboarding.flow.connectApps.apps.twitter':
     "Reads the team account's posts and interactions to learn what you share and who you engage with",
-  'workspace.onboarding.flow.connectApps.linearPrivate.title': 'Include private Linear teams',
-  'workspace.onboarding.flow.connectApps.linearPrivate.desc':
-    "Off: only public teams are read. On: private teams' issues and projects can appear in the team profile every member sees.",
-  'workspace.onboarding.flow.connectApps.linearPrivate.saveFailed':
+  'workspace.onboarding.flow.connectApps.privateSources.title':
+    'Include private content in the analysis',
+  'workspace.onboarding.flow.connectApps.privateSources.desc':
+    'Off: private Linear teams, private Jira projects and personal Confluence spaces are skipped. Anything else the connecting account can see may still be read, so connect with an account whose access fits the whole team. On: private and personal content can also appear in the team profile every member sees.',
+  'workspace.onboarding.flow.connectApps.privateSources.saveFailed':
     "Couldn't save this setting. Try again.",
   'workspace.onboarding.flow.connectApps.more':
     'You can connect more apps anytime in Settings → Connectors.',

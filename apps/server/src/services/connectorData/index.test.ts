@@ -6,8 +6,10 @@ import { ConnectorDataService } from './index';
 
 const mocks = vi.hoisted(() => ({
   composioConnectedAccountGet: vi.fn(),
+  createConfluenceClient: vi.fn(),
   createGitHubMarketClient: vi.fn(),
   createGmailClient: vi.fn(),
+  createJiraClient: vi.fn(),
   createLinearMarketClient: vi.fn(),
   createNotionClient: vi.fn(),
   createTwitterClient: vi.fn(),
@@ -29,6 +31,14 @@ vi.mock('@lobechat/connector-data/gmail', () => ({
   createGmailConnectorClient: mocks.createGmailClient,
   hasGmailReadPermission: (scopes: readonly string[]) =>
     scopes.some((scope) => scope.endsWith('gmail.readonly')),
+}));
+
+vi.mock('@lobechat/connector-data/jira', () => ({
+  createJiraConnectorClient: mocks.createJiraClient,
+}));
+
+vi.mock('@lobechat/connector-data/confluence', () => ({
+  createConfluenceConnectorClient: mocks.createConfluenceClient,
 }));
 
 vi.mock('@lobechat/connector-data/linear', () => ({
@@ -108,6 +118,8 @@ describe('ConnectorDataService', () => {
     mocks.getAccount.mockResolvedValue({ externalAccountId: 'gmail-account', scopes: [] });
     mocks.createGmailClient.mockReturnValue({ getAccount: mocks.getAccount, kind: 'gmail-client' });
     mocks.createNotionClient.mockReturnValue({ kind: 'notion-client' });
+    mocks.createJiraClient.mockReturnValue({ kind: 'jira-client' });
+    mocks.createConfluenceClient.mockReturnValue({ kind: 'confluence-client' });
     mocks.createTwitterClient.mockReturnValue({ kind: 'twitter-client' });
     mocks.queryComposioReferences.mockResolvedValue([]);
   });
@@ -263,6 +275,51 @@ describe('ConnectorDataService', () => {
       connectedAccountId: 'notion-account',
       userId: 'notion-owner',
     });
+  });
+
+  it.each([
+    ['jira', 'getJiraClient', mocks.createJiraClient, 'jira-client'],
+    ['confluence', 'getConfluenceClient', mocks.createConfluenceClient, 'confluence-client'],
+  ] as const)(
+    'creates %s from its first active Composio connector',
+    async (provider, method, create, kind) => {
+      mocks.queryComposioReferences.mockResolvedValue([
+        {
+          composio: {
+            appSlug: provider.toUpperCase(),
+            connectedAccountId: `${provider}-account`,
+            ownerUserId: `${provider}-owner`,
+            status: 'ACTIVE',
+          },
+          id: `${provider}-a`,
+          isEnabled: true,
+          status: 'connected',
+        },
+      ]);
+
+      await expect(
+        new ConnectorDataService(authDb([]), 'user-1', 'ws-1')[method](),
+      ).resolves.toEqual({
+        kind,
+      });
+      expect(mocks.queryComposioReferences).toHaveBeenCalledWith([provider]);
+      expect(create).toHaveBeenCalledWith({
+        composio: expect.objectContaining({ kind: 'composio' }),
+        connectedAccountId: `${provider}-account`,
+        userId: `${provider}-owner`,
+      });
+    },
+  );
+
+  it('leaves Jira out of the available sources when it has no live connection', async () => {
+    mocks.queryComposioReferences.mockResolvedValue([]);
+
+    await expect(
+      new ConnectorDataService(authDb([]), 'user-1').listAvailableProviderIds([
+        'jira',
+        'confluence',
+      ]),
+    ).resolves.toEqual([]);
   });
 
   /** @example A connected Market X skill resolves through the registry-backed read-only client. */
