@@ -6,6 +6,7 @@ import { mutate, useClientDataSWR } from '@/libs/swr';
 import { deviceKeys } from '@/libs/swr/keys';
 import { deviceService } from '@/services/device';
 import { type StoreSetter } from '@/store/types';
+import { isTrpcErrorCode } from '@/utils/trpcError';
 
 import {
   nextWorkingDirs,
@@ -16,6 +17,9 @@ import {
 import { type DeviceStore } from './store';
 
 type Setter = StoreSetter<DeviceStore>;
+
+/** How long a repo-type correction that failed transiently waits before it may be re-sent. */
+const REPO_TYPE_SYNC_RETRY_MS = 60 * 1000;
 
 /**
  * Revalidate both device-list caches: this store's own key and the canonical
@@ -42,8 +46,8 @@ export const deviceSlice = (set: Setter, get: () => DeviceStore, _api?: unknown)
 export class DeviceActionImpl {
   readonly #get: () => DeviceStore;
   readonly #set: Setter;
-  /** `syncWorkingDirRepoType` targets already sent this session. */
-  readonly #repoTypeSyncs = new Set<string>();
+  /** `syncWorkingDirRepoType` targets that may not be sent again before the given time. */
+  readonly #repoTypeSyncBlockedUntil = new Map<string, number>();
 
   constructor(set: Setter, get: () => DeviceStore, _api?: unknown) {
     void _api;
@@ -208,9 +212,11 @@ export class DeviceActionImpl {
    * Correct a device working dir's cached `repoType` in place after a live probe
    * disagreed with it — e.g. a folder registered while still empty and cloned
    * into afterwards. Neither reorders nor adds entries; a no-op when nothing
-   * changes. Each target value is sent at most once per session, so a rejected
-   * write (a viewer cannot edit a shared device) does not loop with the
-   * revalidation that restores the stale value.
+   * changes. A failed write must not loop with the revalidation that restores
+   * the stale value, so its target is held back: for the rest of the session
+   * when the server refused it (a viewer cannot edit a shared device), for
+   * `REPO_TYPE_SYNC_RETRY_MS` after a transient failure. A write that succeeds
+   * holds nothing back, so a later legitimate change to the same value is sent.
    */
   syncWorkingDirRepoType = async (
     deviceId: string,
@@ -223,8 +229,9 @@ export class DeviceActionImpl {
     if (!updated) return;
 
     const syncKey = JSON.stringify([deviceId, path, repoType ?? null]);
-    if (this.#repoTypeSyncs.has(syncKey)) return;
-    this.#repoTypeSyncs.add(syncKey);
+    if ((this.#repoTypeSyncBlockedUntil.get(syncKey) ?? 0) > Date.now()) return;
+    // Held back while in flight too, so a re-render cannot send it twice.
+    this.#repoTypeSyncBlockedUntil.set(syncKey, Number.POSITIVE_INFINITY);
 
     this.#set(
       {
@@ -240,6 +247,14 @@ export class DeviceActionImpl {
       await (device.scope === 'workspace'
         ? deviceService.setWorkspaceDeviceWorkingDirRepoType({ deviceId, path, repoType })
         : deviceService.updateDevice({ deviceId, workingDirs: updated }));
+      this.#repoTypeSyncBlockedUntil.delete(syncKey);
+    } catch (error) {
+      const refused = isTrpcErrorCode(error, 'FORBIDDEN') || isTrpcErrorCode(error, 'UNAUTHORIZED');
+      this.#repoTypeSyncBlockedUntil.set(
+        syncKey,
+        refused ? Number.POSITIVE_INFINITY : Date.now() + REPO_TYPE_SYNC_RETRY_MS,
+      );
+      throw error;
     } finally {
       await revalidateDeviceLists();
     }

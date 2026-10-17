@@ -29,6 +29,7 @@ import type {
 
 import { lambdaClient } from '@/libs/trpc/client';
 import { electronGitService } from '@/services/electron/git';
+import { localFileService } from '@/services/electron/localFileService';
 
 /** Current branch + detached-HEAD state for a working directory (cheap read). */
 export interface GitBranchSummary {
@@ -75,7 +76,17 @@ class GitService {
     deviceId?: string;
     path: string;
   }): Promise<GitRepoTypeProbe | null> {
-    if (!deviceId) return { repoType: await electronGitService.detectRepoType(path) };
+    if (!deviceId) {
+      const repoType = await electronGitService.detectRepoType(path);
+      if (repoType) return { repoType };
+      // `undefined` also comes back for a path that is gone or unreadable (an
+      // unmounted volume), so only a path that still stats proves "not a repo".
+      const exists = await localFileService.getLocalFileStats({ path }).then(
+        () => true,
+        () => false,
+      );
+      return exists ? {} : null;
+    }
 
     const stat = await lambdaClient.device.statPath.query({ deviceId, path });
     if (!stat?.exists || !stat.isDirectory) return null;

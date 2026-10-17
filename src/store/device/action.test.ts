@@ -246,8 +246,8 @@ describe('DeviceAction', () => {
     });
 
     // A viewer cannot edit a shared device: the revalidation restores the stale
-    // value, which must not trigger the same rejected write again.
-    it('sends a rejected correction only once per session', async () => {
+    // value, which must not trigger the same refused write again.
+    it('never re-sends a correction the server refused', async () => {
       const device = buildDevice({
         deviceId: 'ws-dev',
         scope: 'workspace',
@@ -255,16 +255,62 @@ describe('DeviceAction', () => {
       });
       useDeviceStore.setState({ devices: [device] });
       vi.mocked(deviceService.setWorkspaceDeviceWorkingDirRepoType).mockRejectedValueOnce(
-        new Error('FORBIDDEN'),
+        Object.assign(new Error('forbidden'), { data: { code: 'FORBIDDEN' } }),
       );
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
 
       await expect(
         useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/forbidden', 'github'),
-      ).rejects.toThrow('FORBIDDEN');
+      ).rejects.toThrow('forbidden');
       useDeviceStore.setState({ devices: [device] });
+      now.mockReturnValue(1_000_000 + 24 * 60 * 60 * 1000);
       await useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/forbidden', 'github');
 
       expect(deviceService.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(1);
+    });
+
+    // A network blip must not block the correction for the rest of the session.
+    it('re-sends a correction after a transient failure once the retry delay passes', async () => {
+      const device = buildDevice({
+        deviceId: 'ws-dev',
+        scope: 'workspace',
+        workingDirs: [{ path: '/transient' }],
+      });
+      useDeviceStore.setState({ devices: [device] });
+      vi.mocked(deviceService.setWorkspaceDeviceWorkingDirRepoType).mockRejectedValueOnce(
+        new Error('fetch failed'),
+      );
+      const now = vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+
+      await expect(
+        useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/transient', 'github'),
+      ).rejects.toThrow('fetch failed');
+      // The revalidation right after the failure restores the stale entry.
+      useDeviceStore.setState({ devices: [device] });
+      await useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/transient', 'github');
+      expect(deviceService.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(2_000_000 + 61 * 1000);
+      await useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/transient', 'github');
+      expect(deviceService.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(2);
+    });
+
+    // The dir lost its repo and was cloned into again: the second `git` is a
+    // new change, not a repeat of the first.
+    it('re-sends a value it already wrote once the entry changed back', async () => {
+      useDeviceStore.setState({
+        devices: [buildDevice({ workingDirs: [{ path: '/recloned' }] })],
+      });
+
+      await useDeviceStore.getState().syncWorkingDirRepoType('dev-1', '/recloned', 'git');
+      await useDeviceStore.getState().syncWorkingDirRepoType('dev-1', '/recloned', undefined);
+      await useDeviceStore.getState().syncWorkingDirRepoType('dev-1', '/recloned', 'git');
+
+      expect(deviceService.updateDevice).toHaveBeenCalledTimes(3);
+      expect(deviceService.updateDevice).toHaveBeenLastCalledWith({
+        deviceId: 'dev-1',
+        workingDirs: [{ path: '/recloned', repoType: 'git' }],
+      });
     });
   });
 });

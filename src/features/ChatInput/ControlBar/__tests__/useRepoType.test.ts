@@ -10,6 +10,7 @@ import { useRepoType } from '../useRepoType';
 
 const rpc = vi.hoisted(() => ({
   detectLocalRepoType: vi.fn(),
+  getLocalFileStats: vi.fn(),
   setWorkspaceDeviceWorkingDirRepoType: vi.fn(),
   statPath: vi.fn(),
   updateDevice: vi.fn(),
@@ -36,6 +37,10 @@ vi.mock('@/libs/trpc/client', () => ({
 
 vi.mock('@/services/electron/git', () => ({
   electronGitService: { detectRepoType: rpc.detectLocalRepoType },
+}));
+
+vi.mock('@/services/electron/localFileService', () => ({
+  localFileService: { getLocalFileStats: rpc.getLocalFileStats },
 }));
 
 vi.mock('@/store/electron', () => ({
@@ -193,6 +198,47 @@ describe('useRepoType', () => {
       expect(rpc.updateDevice).toHaveBeenCalledWith({
         deviceId: 'this-machine',
         workingDirs: [{ path: '/local/cloned-later', repoType: 'git' }],
+      }),
+    );
+  });
+
+  // An unmounted volume: the repo is still there, just not reachable. The IPC
+  // probe answers `undefined` for it exactly as for a plain folder.
+  it('keeps a local repo type when its path is missing', async () => {
+    useDeviceStore.setState({
+      devices: [
+        device('this-machine', [{ path: '/Volumes/offline/repo', repoType: 'github' }], 'personal'),
+      ],
+    });
+    rpc.detectLocalRepoType.mockResolvedValue(undefined);
+    rpc.getLocalFileStats.mockRejectedValue(new Error('ENOENT'));
+
+    const { result } = renderRepoType('/Volumes/offline/repo');
+
+    await waitFor(() => expect(rpc.getLocalFileStats).toHaveBeenCalled());
+    expect(result.current).toBe('github');
+    expect(rpc.updateDevice).not.toHaveBeenCalled();
+    expect(workingDirsOf('this-machine')).toEqual([
+      { path: '/Volumes/offline/repo', repoType: 'github' },
+    ]);
+  });
+
+  it('clears a local repo type when the existing dir is no longer a repo', async () => {
+    useDeviceStore.setState({
+      devices: [
+        device('this-machine', [{ path: '/local/repo-removed', repoType: 'git' }], 'personal'),
+      ],
+    });
+    rpc.detectLocalRepoType.mockResolvedValue(undefined);
+    rpc.getLocalFileStats.mockResolvedValue({ size: 4096 });
+
+    const { result } = renderRepoType('/local/repo-removed');
+
+    await waitFor(() => expect(result.current).toBeUndefined());
+    await waitFor(() =>
+      expect(rpc.updateDevice).toHaveBeenCalledWith({
+        deviceId: 'this-machine',
+        workingDirs: [{ path: '/local/repo-removed' }],
       }),
     );
   });
