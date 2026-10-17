@@ -6,6 +6,7 @@ import ResourceConfigAccessGate from './ResourceConfigAccessGate';
 
 const mocks = vi.hoisted(() => ({
   accessConfirmed: true,
+  accessError: undefined as Error | undefined,
   accessResolved: true,
   canEditContent: true,
   canEditResource: false,
@@ -19,15 +20,30 @@ vi.mock('@lobehub/ui', async (importOriginal) => ({
   toast: { info: mocks.toastInfo },
 }));
 vi.mock('@/components/AsyncBoundary', () => ({
+  // Mirrors the real precedence: loading → error → children, and a settled
+  // `data` keeps children on screen through a failed revalidation.
   default: ({
     children,
+    data,
+    error,
     isLoading,
     loading,
   }: {
     children: ReactNode;
+    data: unknown;
+    error?: unknown;
     isLoading: boolean;
     loading: ReactNode;
-  }) => (isLoading ? loading : children),
+  }) =>
+    data !== undefined ? (
+      children
+    ) : isLoading ? (
+      loading
+    ) : error ? (
+      <div>Access error</div>
+    ) : (
+      children
+    ),
 }));
 vi.mock('@/components/Skeleton/Surface', () => ({ default: () => null }));
 vi.mock('@/features/Workspace/useWorkspaceAwareNavigate', () => ({
@@ -38,7 +54,7 @@ vi.mock('@/hooks/usePermission', () => ({
 }));
 vi.mock('./useResourceAccess', () => ({
   useResourceAccess: () => ({
-    accessError: undefined,
+    accessError: mocks.accessError,
     canEditResource: mocks.canEditResource,
     canManageResource: mocks.canManageResource,
     isAccessConfirmed: mocks.accessConfirmed,
@@ -72,6 +88,7 @@ describe('ResourceConfigAccessGate', () => {
     mocks.canEditResource = false;
     mocks.canManageResource = false;
     mocks.accessConfirmed = true;
+    mocks.accessError = undefined;
     mocks.accessResolved = true;
   });
 
@@ -168,5 +185,38 @@ describe('ResourceConfigAccessGate', () => {
     await waitFor(() => {
       expect(mocks.navigate).toHaveBeenCalledWith('/agent/agent-1', { replace: true });
     });
+  });
+
+  // Regression: a cached-but-blocked state counted as settled, so when its
+  // re-check failed the boundary kept the child skeleton forever with no Retry.
+  it('shows the error state when a cached denial fails to revalidate', () => {
+    mocks.accessConfirmed = false;
+    mocks.accessError = new Error('network');
+
+    const { getByText, queryByText } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Access error')).toBeInTheDocument();
+    expect(queryByText('Profile loading')).not.toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('shows the error state when an unconfirmed manage gate fails to revalidate', () => {
+    mocks.accessConfirmed = false;
+    mocks.accessError = new Error('network');
+    mocks.canEditResource = true;
+
+    const { getByText } = renderGate('agent', <div>Profile loading</div>, 'manage');
+
+    expect(getByText('Access error')).toBeInTheDocument();
+  });
+
+  it('keeps a cached grant on screen when its revalidation fails', () => {
+    mocks.accessConfirmed = false;
+    mocks.accessError = new Error('network');
+    mocks.canEditResource = true;
+
+    const { getByText } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Agent config')).toBeInTheDocument();
   });
 });

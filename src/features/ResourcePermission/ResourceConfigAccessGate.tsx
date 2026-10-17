@@ -83,11 +83,14 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
     ]);
 
     return (
+      // Settled only once the page can render: a cached denial or an
+      // unconfirmed manage grant is still blocked, and if its re-check fails
+      // the error page (with Retry) must show instead of an endless skeleton.
       <AsyncBoundary
-        data={accessReady ? true : undefined}
+        data={canConfigure ? true : undefined}
         error={accessError}
         errorVariant={'page'}
-        isLoading={!accessReady && !accessError}
+        isLoading={!canConfigure && !accessError}
         loading={loading ?? <SurfaceSkeleton variant={'form'} />}
         onRetry={() => void retryAccess()}
       >
