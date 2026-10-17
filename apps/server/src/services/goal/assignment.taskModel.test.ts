@@ -153,4 +153,18 @@ describe('goal task model override', () => {
 
     expect(handed.goal.config).toMatchObject({ taskModel: 'gemini-3.8-flash' });
   });
+
+  it("moves restarted Tasks to the new agent's model when restart hands the goal over", async () => {
+    const { goalId, taskId } = await goalWithTask();
+    await service().setTaskModel(goalId, { model: 'gemini-3.8-flash', provider: 'google' });
+
+    const restarted = await service().restart(goalId, { agentId: otherAgentId });
+
+    expect(restarted.goal.config).not.toHaveProperty('taskModel');
+    expect(await taskModelOf(taskId)).toEqual({
+      assignee: otherAgentId,
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+    });
+  });
 });

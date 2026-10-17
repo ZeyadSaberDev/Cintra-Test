@@ -1537,13 +1537,17 @@ export class GoalService {
         ? await this.goalModel.updateTaskAgentId(goalId, options.agentId)
         : await this.goalModel.update(goalId, { agentId: options.agentId });
       if (!updated) throw new TRPCError({ code: 'NOT_FOUND', message: 'Goal not found' });
-      goal =
-        goalTaskAgentId(goal) === options.agentId
-          ? updated
-          : await this.assignment.dropModelOverride(
-              updated,
-              goal.config?.taskAgentId ? ['task'] : ['planning', 'task'],
-            );
+      const executorChanged = goalTaskAgentId(goal) !== options.agentId;
+      goal = executorChanged
+        ? await this.assignment.dropModelOverride(
+            updated,
+            goal.config?.taskAgentId ? ['task'] : ['planning', 'task'],
+          )
+        : updated;
+      // The restarted Tasks were handed over above; they run on the new
+      // executor's model, not the dropped override or the old snapshot.
+      if (executorChanged)
+        await this.assignment.applyExecutorModel(goal, restartedTaskIds, options.agentId);
     }
 
     // A restart is an explicit "start over": a goal parked by a budget stop or

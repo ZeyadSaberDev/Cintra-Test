@@ -3,11 +3,12 @@ import { toast } from '@lobehub/ui';
 import { useAgentModelSelection } from '@/features/ChatInput/hooks/useAgentModelSelection';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAgentStore } from '@/store/agent';
+import { agentByIdSelectors } from '@/store/agent/selectors';
 import { goalSelectors, useGoalStore } from '@/store/goal';
 import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
 import { useUserStore } from '@/store/user';
-import { authSelectors } from '@/store/user/selectors';
+import { authSelectors, systemAgentSelectors } from '@/store/user/selectors';
 
 type ModelConfig = { model: string; provider: string };
 
@@ -21,10 +22,11 @@ interface UseGoalAgentModelParams {
 }
 
 /**
- * The model an agent runs on for the current caller — including a Workspace
- * member's own pick on a shared Agent — which a goal slot shows until the goal
- * overrides it. Hydrates the agent's config, since the surrounding page may be
- * about another agent.
+ * An agent's models as the goal's two slots fall back to them: `effective` is
+ * what an agent run uses for the current caller (a Workspace member's own pick
+ * on a shared Agent included); `shared` is the Agent row's own model, which is
+ * what a Task created for it is pinned to. Hydrates the agent's config, since
+ * the surrounding page may be about another agent.
  */
 const useAgentOwnModel = (agentId?: string) => {
   const isLogin = useUserStore(authSelectors.isLogin);
@@ -32,26 +34,30 @@ const useAgentOwnModel = (agentId?: string) => {
   useHydrateAgentConfig(isLogin, agentId ?? '');
   const loaded = useAgentStore((s) => !!agentId && !!s.agentMap[agentId]);
   const selection = useAgentModelSelection(agentId ?? '');
+  const sharedModel = useAgentStore((s) => agentByIdSelectors.getAgentModelById(agentId ?? '')(s));
+  const sharedProvider = useAgentStore((s) =>
+    agentByIdSelectors.getAgentModelProviderById(agentId ?? '')(s),
+  );
   const heterogeneousType = useHomeStore(
     (s) => homeAgentListSelectors.getAgentById(agentId ?? '')(s)?.heterogeneousType,
   );
   return {
+    effective: { model: selection.model, provider: selection.provider },
     heterogeneousType,
     // The author pinned this shared Agent's model, so only they or an admin
     // may override it — the server refuses everyone else.
     locked: selection.usesWorkspaceMemberSelection && selection.selectionPolicy === 'fixed',
-    model: selection.model,
-    provider: selection.provider,
     // Until the agent and the caller's preference load, the fallback is a
     // repository default, and a pick compared against it would be misread.
     ready: loaded && !selection.isPreferenceLoading,
+    shared: { model: sharedModel, provider: sharedProvider },
   };
 };
 
 /**
  * Who plans the goal and who does its Tasks, each with the model it runs on:
- * what the pickers show and what a pick writes. A model falls back to its
- * agent's own until the goal overrides it.
+ * what the pickers show and what a pick writes. Each model falls back to what
+ * that role would run on anyway until the goal overrides it.
  */
 export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelParams) => {
   const navigate = useWorkspaceAwareNavigate();
@@ -67,9 +73,21 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
   const setGoalModel = useGoalStore((s) => s.setGoalModel);
   const setGoalTaskAgent = useGoalStore((s) => s.setGoalTaskAgent);
   const setGoalTaskModel = useGoalStore((s) => s.setGoalTaskModel);
+  const managed = useGoalStore((s) => !!graph(s)?.goal.config?.manager);
+  const systemGoalModel = useUserStore(systemAgentSelectors.goal);
+  // The system goal model lives in user settings; before they load it reads as
+  // the built-in default.
+  const settingsReady = useUserStore((s) => s.isUserStateInit);
 
   const planner = useAgentOwnModel(agentId);
   const executor = useAgentOwnModel(taskAgentId ?? agentId);
+  // What each slot runs on without a goal override — the same fallback the
+  // server applies, so picking it clears the override instead of pinning it.
+  // Main-agent turns run the agent with no explicit model; the coordinator's
+  // own planning uses the system goal model; a Task is pinned to the Agent row.
+  const plannerFallback = managed ? planner.effective : systemGoalModel;
+  const executorFallback = executor.shared;
+  const plannerReady = planner.ready && (managed || settingsReady);
 
   const run = async (write: () => Promise<void>) => {
     try {
@@ -107,14 +125,14 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
       changeModel: (next: ModelConfig) =>
         run(async () => {
           if (!executor.ready || executor.locked) return;
-          await setGoalTaskModel(goalId, overrideOf(next, executor));
+          await setGoalTaskModel(goalId, overrideOf(next, executorFallback));
         }),
       heterogeneousType: executor.heterogeneousType,
       modelLocked: executor.locked,
       modelReady: executor.ready,
       model: {
-        model: taskModel || executor.model || '',
-        provider: taskProvider || executor.provider || '',
+        model: taskModel || executorFallback.model || '',
+        provider: taskProvider || executorFallback.provider || '',
       },
     },
     planner: {
@@ -122,15 +140,15 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
       changeAgent,
       changeModel: (next: ModelConfig) =>
         run(async () => {
-          if (!planner.ready || planner.locked) return;
-          await setGoalModel(goalId, overrideOf(next, planner));
+          if (!plannerReady || planner.locked) return;
+          await setGoalModel(goalId, overrideOf(next, plannerFallback));
         }),
       heterogeneousType: planner.heterogeneousType,
       modelLocked: planner.locked,
-      modelReady: planner.ready,
+      modelReady: plannerReady,
       model: {
-        model: planningModel || planner.model || '',
-        provider: planningProvider || planner.provider || '',
+        model: planningModel || plannerFallback.model || '',
+        provider: planningProvider || plannerFallback.provider || '',
       },
     },
   };

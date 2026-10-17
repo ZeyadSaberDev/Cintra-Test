@@ -5,7 +5,8 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { agents, goals, users, workspaceMembers, workspaces } from '@/database/schemas';
+import { TaskModel } from '@/database/models/task';
+import { agents, goals, tasks, users, workspaceMembers, workspaces } from '@/database/schemas';
 
 import { GoalAssignmentService } from './assignment';
 import { GoalService } from './index';
@@ -63,6 +64,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  await db.delete(tasks).where(eq(tasks.workspaceId, workspaceId));
   await db.delete(goals).where(eq(goals.workspaceId, workspaceId));
   await db.delete(agents).where(eq(agents.workspaceId, workspaceId));
   await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
@@ -102,5 +104,32 @@ describe('goal model overrides on a fixed-model Agent', () => {
     );
 
     expect(goal.config).toMatchObject({ model: 'gemini-3.8-flash' });
+  });
+
+  it("switches the owner's private Tasks when a Workspace admin sets the Task model", async () => {
+    const privateAgentId = `goal-policy-private-${randomUUID()}`;
+    await db.insert(agents).values({
+      id: privateAgentId,
+      model: 'gpt-4o-mini',
+      provider: 'openai',
+      slug: `private-${randomUUID()}`,
+      userId: memberId,
+      visibility: 'private',
+      workspaceId,
+    });
+    const memberGoals = new GoalService(db, memberId, workspaceId);
+    const graph = await memberGoals.create({
+      agentId: privateAgentId,
+      tasks: ['Only task'],
+      title: 'Private work',
+    });
+    const { taskId } = await memberGoals.tick(graph.goal.id);
+    const ownTask = () => new TaskModel(db, memberId, workspaceId).findById(taskId!);
+    expect((await ownTask())?.visibility).toBe('private');
+
+    // The Workspace owner acts on the member's goal; the Task is still the member's.
+    await new GoalAssignmentService(db, authorId, workspaceId).setTaskModel(graph.goal.id, gemini);
+
+    expect((await ownTask())?.config).toMatchObject({ model: 'gemini-3.8-flash' });
   });
 });

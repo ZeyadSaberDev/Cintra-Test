@@ -8,6 +8,7 @@ import { useGoalAgentModel } from './useGoalAgentModel';
 
 const mocks = vi.hoisted(() => ({
   config: {} as {
+    manager?: object;
     model?: string;
     provider?: string;
     taskAgentId?: string;
@@ -17,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   loadedAgents: new Set(['agt_old', 'agt_exec']),
   lockedAgents: new Set<string>(),
   navigate: vi.fn(),
+  memberPicks: {} as Record<string, string>,
   preferenceLoading: false,
+  settingsReady: true,
   setGoalAgent: vi.fn(),
   setGoalModel: vi.fn(),
   setGoalTaskAgent: vi.fn(),
@@ -45,12 +48,21 @@ vi.mock('@/store/agent', () => ({
     }),
 }));
 
-// The caller's effective model for an agent, as the chat model trigger reads it.
+// The Agent row's own model, which a Task created for it is pinned to.
+vi.mock('@/store/agent/selectors', () => ({
+  agentByIdSelectors: {
+    getAgentModelById: (id: string) => () => (id === 'agt_exec' ? 'deepseek-chat' : 'gpt-4o-mini'),
+    getAgentModelProviderById: (id: string) => () => (id === 'agt_exec' ? 'deepseek' : 'openai'),
+  },
+}));
+
+// The caller's effective model for an agent, as the chat model trigger reads it:
+// a member's own pick (`memberPicks`) wins over the Agent row.
 vi.mock('@/features/ChatInput/hooks/useAgentModelSelection', () => ({
   useAgentModelSelection: (id: string) => ({
     isPreferenceLoading: mocks.preferenceLoading,
-    model: id === 'agt_exec' ? 'deepseek-chat' : 'gpt-4o-mini',
-    provider: id === 'agt_exec' ? 'deepseek' : 'openai',
+    model: mocks.memberPicks[id] ?? (id === 'agt_exec' ? 'deepseek-chat' : 'gpt-4o-mini'),
+    provider: mocks.memberPicks[id] ? 'google' : id === 'agt_exec' ? 'deepseek' : 'openai',
     selectionPolicy: mocks.lockedAgents.has(id) ? 'fixed' : 'member',
     usesWorkspaceMemberSelection: mocks.lockedAgents.has(id),
   }),
@@ -60,15 +72,24 @@ vi.mock('@/store/home', () => ({ useHomeStore: (selector: (s: any) => unknown) =
 vi.mock('@/store/home/selectors', () => ({
   homeAgentListSelectors: { getAgentById: () => () => undefined },
 }));
-vi.mock('@/store/user', () => ({ useUserStore: () => true }));
-vi.mock('@/store/user/selectors', () => ({ authSelectors: { isLogin: () => true } }));
+vi.mock('@/store/user', () => ({
+  useUserStore: (selector: (s: any) => unknown) =>
+    selector({ isUserStateInit: mocks.settingsReady }),
+}));
+vi.mock('@/store/user/selectors', () => ({
+  authSelectors: { isLogin: () => true },
+  systemAgentSelectors: { goal: () => ({ model: 'system-goal', provider: 'system-provider' }) },
+}));
 vi.mock('@/features/Workspace/useWorkspaceAwareNavigate', () => ({
   useWorkspaceAwareNavigate: () => mocks.navigate,
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.config = {};
+  // Main-agent planning turns, so the planner falls back to the agent's model.
+  mocks.config = { manager: {} };
+  mocks.memberPicks = {};
+  mocks.settingsReady = true;
   mocks.loadedAgents = new Set(['agt_old', 'agt_exec']);
   mocks.lockedAgents = new Set();
   mocks.preferenceLoading = false;
@@ -99,7 +120,7 @@ describe('useGoalAgentModel', () => {
     const { result, rerender } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
     expect(result.current.planner.model).toEqual({ model: 'gpt-4o-mini', provider: 'openai' });
 
-    mocks.config = { model: 'gemini-3.8-flash', provider: 'google' };
+    mocks.config = { manager: {}, model: 'gemini-3.8-flash', provider: 'google' };
     rerender();
     expect(result.current.planner.model).toEqual({ model: 'gemini-3.8-flash', provider: 'google' });
   });
@@ -201,5 +222,43 @@ describe('useGoalAgentModel', () => {
       result.current.planner.changeModel({ model: 'gemini-3.8-flash', provider: 'google' }),
     );
     expect(mocks.setGoalModel).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the system goal model when the coordinator plans the goal', async () => {
+    mocks.config = {};
+    const { result } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+    expect(result.current.planner.model).toEqual({
+      model: 'system-goal',
+      provider: 'system-provider',
+    });
+
+    // The agent's own model is a real choice here, not the fallback.
+    await act(() =>
+      result.current.planner.changeModel({ model: 'gpt-4o-mini', provider: 'openai' }),
+    );
+    expect(mocks.setGoalModel).toHaveBeenLastCalledWith('goal_1', {
+      model: 'gpt-4o-mini',
+      provider: 'openai',
+    });
+
+    await act(() =>
+      result.current.planner.changeModel({ model: 'system-goal', provider: 'system-provider' }),
+    );
+    expect(mocks.setGoalModel).toHaveBeenLastCalledWith('goal_1', null);
+  });
+
+  it('waits for user settings before accepting a coordinator planning model', async () => {
+    mocks.config = {};
+    mocks.settingsReady = false;
+    const { result } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+    expect(result.current.planner.modelReady).toBe(false);
+  });
+
+  it("plans on the member's own pick but pins Tasks to the Agent row's model", () => {
+    mocks.memberPicks = { agt_old: 'gemini-member' };
+    const { result } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+
+    expect(result.current.planner.model).toEqual({ model: 'gemini-member', provider: 'google' });
+    expect(result.current.executor.model).toEqual({ model: 'gpt-4o-mini', provider: 'openai' });
   });
 });

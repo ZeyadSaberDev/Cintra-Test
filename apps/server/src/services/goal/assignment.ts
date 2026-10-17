@@ -99,16 +99,8 @@ export class GoalAssignmentService {
    * model with `null`. Only planning turns read it — Tasks keep their own model
    * — and a turn already running keeps the model it started on.
    */
-  setModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> => {
-    if (modelConfig) {
-      const current = await this.goalModel.findById(goalId);
-      if (!current) throw goalNotFound();
-      if (current.agentId) await this.assertModelSelectable(current.agentId);
-    }
-    const goal = await this.goalModel.updateModelConfig(goalId, modelConfig);
-    if (!goal) throw goalNotFound();
-    return goal;
-  };
+  setModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> =>
+    this.writeModelOverride(goalId, modelConfig, 'planning');
 
   /**
    * Pick the model the goal's Tasks run on, or fall back to their executor's own
@@ -116,20 +108,40 @@ export class GoalAssignmentService {
    * it, and unfinished ones switch with it; a run already going keeps its model.
    */
   setTaskModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> => {
-    if (modelConfig) {
-      const current = await this.goalModel.findById(goalId);
-      if (!current) throw goalNotFound();
-      const executor = await this.resolveTaskAssignee(current);
-      if (executor) await this.assertModelSelectable(executor);
-    }
-    const goal = await this.goalModel.updateModelConfig(goalId, modelConfig, 'task');
-    if (!goal) throw goalNotFound();
+    const goal = await this.writeModelOverride(goalId, modelConfig, 'task');
     const executor = await this.resolveTaskAssignee(goal);
     const next = modelConfig ?? (executor ? await this.agentModelOf(executor) : undefined);
     if (next) {
-      for (const task of await this.unfinishedTasks(goalId))
-        await this.taskModel.updateTaskConfig(task.id, next);
+      const { taskModel, tasks } = await this.unfinishedTasks(goalId);
+      for (const task of tasks) await taskModel.updateTaskConfig(task.id, next);
     }
+    return goal;
+  };
+
+  /**
+   * Check the slot's agent and write its override under the goal row lock, so
+   * an agent handoff racing this write cannot slip in between: the check always
+   * sees the agent the override will actually apply to.
+   */
+  private writeModelOverride = async (
+    goalId: string,
+    modelConfig: ModelConfig | null,
+    slot: 'planning' | 'task',
+  ): Promise<GoalItem> => {
+    const goal = await this.db.transaction(async (tx) => {
+      const model = new GoalModel(tx, this.userId, this.workspaceId);
+      const current = await model.lockById(goalId);
+      if (!current) throw goalNotFound();
+      if (modelConfig) {
+        // Reads inside the transaction go through it, not around it.
+        const scoped = new GoalAssignmentService(tx, this.userId, this.workspaceId);
+        const agentId =
+          slot === 'task' ? await scoped.resolveTaskAssignee(current) : current.agentId;
+        if (agentId) await scoped.assertModelSelectable(agentId);
+      }
+      return model.updateModelConfig(goalId, modelConfig, slot);
+    });
+    if (!goal) throw goalNotFound();
     return goal;
   };
 
@@ -259,22 +271,50 @@ export class GoalAssignmentService {
     // A moved Task takes its new executor's model, the one it would have been
     // created with; the previous executor's snapshot may name another runtime.
     const model = await this.agentModelOf(agentId);
+    const { taskModel, tasks } = await this.unfinishedTasks(goalId);
     const reassigned: string[] = [];
-    for (const task of await this.unfinishedTasks(goalId)) {
+    for (const task of tasks) {
       if (task.assigneeAgentId === agentId) continue;
-      await this.taskModel.update(task.id, { assigneeAgentId: agentId });
-      if (model) await this.taskModel.updateTaskConfig(task.id, model);
+      await taskModel.update(task.id, { assigneeAgentId: agentId });
+      if (model) await taskModel.updateTaskConfig(task.id, model);
       reassigned.push(task.id);
     }
     return reassigned;
   };
 
+  /**
+   * Give Tasks that were just handed to `agentId` outside this service (a
+   * restart with a new agent) that agent's model, as a reassignment would.
+   */
+  applyExecutorModel = async (
+    goal: Pick<GoalItem, 'userId'>,
+    taskIds: string[],
+    agentId: string,
+  ) => {
+    const model = await this.agentModelOf(agentId);
+    if (!model || taskIds.length === 0) return;
+    const taskModel = this.taskModelFor(goal);
+    for (const taskId of taskIds) await taskModel.updateTaskConfig(taskId, model);
+  };
+
+  /**
+   * Tasks belong to the goal's owner, so a Workspace admin acting on someone
+   * else's goal reads and writes them under the owner — the caller's own scope
+   * would miss the owner's private Tasks.
+   */
+  private taskModelFor = (goal: Pick<GoalItem, 'userId'>) =>
+    goal.userId === this.userId
+      ? this.taskModel
+      : new TaskModel(this.db, goal.userId, this.workspaceId);
+
   private unfinishedTasks = async (goalId: string) => {
     const graph = await this.graphModel.getGraph(goalId);
     if (!graph) throw goalNotFound();
+    const taskModel = this.taskModelFor(graph.goal);
     const taskIds = graph.nodes.flatMap((node) => (node.taskId ? [node.taskId] : []));
-    return (await this.taskModel.findByIds(taskIds)).filter(
+    const tasks = (await taskModel.findByIds(taskIds)).filter(
       (task) => task.status !== 'completed' && task.status !== 'canceled',
     );
+    return { taskModel, tasks };
   };
 }
