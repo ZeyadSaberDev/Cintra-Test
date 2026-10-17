@@ -280,6 +280,8 @@
   "connectAgent.providerDesc.qoder": "Qoder coding agent CLI",
   "connectAgent.providerDesc.trae": "TRAE Enterprise coding agent CLI",
   "createGoal.addCriterion": "Add criterion",
+  "createGoal.agentsHint": "The main agent plans and supervises the goal; tasks go to the executor, or to the main agent when none is chosen.",
+  "createGoal.agentsTitle": "Agents",
   "createGoal.back": "Back",
   "createGoal.budgetTitle": "Budget",
   "createGoal.contextHint": "Add constraints, source material, or anything the Agent should know",

@@ -2102,6 +2102,9 @@ export default {
   'createGoal.costBudgetPlaceholder': 'No cap',
   'createGoal.createFailed': 'Failed to create goal',
   'createGoal.back': 'Back',
+  'createGoal.agentsHint':
+    'The main agent plans and supervises the goal; tasks go to the executor, or to the main agent when none is chosen.',
+  'createGoal.agentsTitle': 'Agents',
   'createGoal.budgetTitle': 'Budget',
   'createGoal.contextLabel': 'Context for the Agent',
   'createGoal.contextHint': 'Add constraints, source material, or anything the Agent should know',

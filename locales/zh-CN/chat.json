@@ -280,6 +280,8 @@
   "connectAgent.providerDesc.qoder": "Qoder 编码助理 CLI",
   "connectAgent.providerDesc.trae": "TRAE 企业版编码助理 CLI",
   "createGoal.addCriterion": "添加验收标准",
+  "createGoal.agentsHint": "主 Agent 负责规划和监督目标；任务交给执行 Agent，不选则由主 Agent 自己完成。",
+  "createGoal.agentsTitle": "负责的 Agent",
   "createGoal.back": "返回",
   "createGoal.budgetTitle": "预算",
   "createGoal.contextHint": "补充约束、参考资料或 Agent 开始前需要知道的信息",
