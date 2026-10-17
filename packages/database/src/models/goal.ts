@@ -158,6 +158,27 @@ export class GoalModel {
   };
 
   /**
+   * Patch only `config.model` / `config.provider` (or drop both with `null`),
+   * for the same reason as `updateTaskAgentId`.
+   */
+  updateModelConfig = async (
+    id: string,
+    modelConfig: { model: string; provider: string } | null,
+  ) => {
+    const [row] = await this.db
+      .update(goals)
+      .set({
+        config: modelConfig
+          ? sql`COALESCE(${goals.config}, '{}'::jsonb) || ${JSON.stringify(modelConfig)}::jsonb`
+          : sql`COALESCE(${goals.config}, '{}'::jsonb) - 'model' - 'provider'`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(goals.id, id), this.ownership()))
+      .returning();
+    return row as GoalItem | undefined;
+  };
+
+  /**
    * Claim the queued wake for a Task waiting on a usage-window reset, so that
    * repeated ticks before the reset (the sweep, Task events, manual advances)
    * queue one callback instead of one each. Succeeds only when no wake is armed,

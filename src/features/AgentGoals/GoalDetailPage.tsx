@@ -25,6 +25,7 @@ import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { goalSelectors, useGoalStore } from '@/store/goal';
 
+import GoalAgentModelConfig from './GoalAgentModelConfig';
 import GoalChat from './GoalChat';
 import GoalDetailActions from './GoalDetailActions';
 import GoalHeaderMetrics from './GoalHeaderMetrics';
@@ -242,9 +243,9 @@ const GoalDetailPage = memo<GoalDetailPageProps>(({ agentId, goalId }) => {
                   button is only the control. */}
               {/* A draft is still being arranged: nothing has been dispatched,
                   and starting it is the one explicit move into running. */}
-              {goal.status === 'draft' && (
-                <Flexbox horizontal align={'center'} gap={10} paddingBlock={'8px 0'}>
-                  {canEdit && canStart && (
+              {(goal.status === 'draft' || canPause || goal.agentId) && (
+                <Flexbox horizontal align={'center'} gap={10} paddingBlock={'8px 0'} wrap={'wrap'}>
+                  {goal.status === 'draft' && canEdit && canStart && (
                     <Button
                       icon={PlayIcon}
                       loading={starting}
@@ -263,21 +264,26 @@ const GoalDetailPage = memo<GoalDetailPageProps>(({ agentId, goalId }) => {
                       {t('goalProcess.start')}
                     </Button>
                   )}
-                  <Text fontSize={12} type={'secondary'}>
-                    {t('goalProcess.draft')}
-                  </Text>
-                </Flexbox>
-              )}
-              {canPause && (
-                <Flexbox horizontal align={'center'} gap={10} paddingBlock={'8px 0'}>
-                  <Button
-                    icon={paused ? PlayIcon : PauseIcon}
-                    type={paused ? 'primary' : 'default'}
-                    onClick={() => void (paused ? resumeGoal(goal.id) : pauseGoal(goal.id))}
-                  >
-                    {paused ? t('goalProcess.resume') : t('goalProcess.pause')}
-                  </Button>
-                  {paused && (
+                  {canPause && (
+                    <Button
+                      icon={paused ? PlayIcon : PauseIcon}
+                      type={paused ? 'primary' : 'default'}
+                      onClick={() => void (paused ? resumeGoal(goal.id) : pauseGoal(goal.id))}
+                    >
+                      {paused ? t('goalProcess.resume') : t('goalProcess.pause')}
+                    </Button>
+                  )}
+                  {/* Who plans the goal and on which model, next to the control
+                      that starts or pauses that planning. */}
+                  {goal.agentId && (
+                    <GoalAgentModelConfig disabled={!canEdit || !canStart} goalId={goal.id} />
+                  )}
+                  {goal.status === 'draft' && (
+                    <Text fontSize={12} type={'secondary'}>
+                      {t('goalProcess.draft')}
+                    </Text>
+                  )}
+                  {canPause && paused && (
                     <Text fontSize={12} type={'secondary'}>
                       {t('goalProcess.paused')}
                     </Text>

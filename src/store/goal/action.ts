@@ -331,6 +331,27 @@ export class GoalActionImpl {
     await this.refreshGoalGraph(goalId);
   };
 
+  /**
+   * The goal moves to the new agent's goal list, so both agents' lists re-read
+   * along with the page.
+   */
+  setGoalAgent = async (goalId: string, agentId: string): Promise<void> => {
+    await goalService.setAgent(goalId, agentId);
+    await Promise.all([
+      this.refreshGoalGraph(goalId),
+      revalidateReplica(goalListResource),
+      revalidateReplica(homeGoalListResource),
+    ]);
+  };
+
+  setGoalModel = async (
+    goalId: string,
+    modelConfig: { model: string; provider: string } | null,
+  ): Promise<void> => {
+    await goalService.setModel(goalId, modelConfig);
+    await this.refreshGoalGraph(goalId);
+  };
+
   updateGoalRequirement = async (goalId: string, requirement: string): Promise<void> => {
     await goalService.updateRequirement(goalId, requirement);
     await this.refreshGoalGraph(goalId);

@@ -2282,6 +2282,7 @@ export default {
     'The complete task tree and latest runs for this goal.',
   'goalDetail.instruction': 'Goal instruction',
   'goalDetail.latestRuns': 'Recent executions',
+  'goalDetail.mainAgent': 'Main agent · plans and supervises this goal',
   'goalDetail.closeConfirm.achieved.content':
     'Runs still in progress will be stopped and no new tasks will start. You can reopen the goal from this menu.',
   'goalDetail.closeConfirm.achieved.ok': 'Mark achieved',
@@ -2295,6 +2296,7 @@ export default {
   'goalDetail.deleteConfirm.ok': 'Delete goal',
   'goalDetail.deleteConfirm.title': 'Delete this goal?',
   'goalDetail.moreActions': 'More goal actions',
+  'goalDetail.planningModel': 'Model the main agent plans with · tasks keep their own model',
   'goalDetail.metrics.planItems': 'Plan items',
   'goalDetail.metrics.progress': 'Progress',
   'goalDetail.metrics.agentRuns': 'Agent runs',
