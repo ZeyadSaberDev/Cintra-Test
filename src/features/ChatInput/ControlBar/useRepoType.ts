@@ -12,6 +12,24 @@ import { getRecentDirs, setRecentDirRepoType } from './recentDirs';
 
 export type RepoType = 'git' | 'github' | undefined;
 
+export interface RepoTypeState {
+  repoType: RepoType;
+  /**
+   * The type comes from a probe of the dir itself, so an `undefined` means
+   * "not a repo". `false` while the probe is pending or could not run (device
+   * offline, path gone), when `repoType` is only the cached value.
+   */
+  verified: boolean;
+}
+
+/**
+ * The repo type to gate git UI on. A verified probe wins outright, "not a repo"
+ * included; only an unverified one (pending, device offline, path gone) falls
+ * back to `fallback`, e.g. a topic's persisted snapshot.
+ */
+export const resolveRepoType = (state: RepoTypeState, fallback: RepoType): RepoType =>
+  state.verified ? state.repoType : (state.repoType ?? fallback);
+
 /**
  * Resolve the repo type for a working directory on `deviceId` (the local machine
  * when omitted).
@@ -27,7 +45,7 @@ export type RepoType = 'git' | 'github' | undefined;
  * registered while still empty and cloned into afterwards. A probe that could
  * not run (device offline, path gone) keeps the cached value.
  */
-export const useRepoType = (path?: string, deviceId?: string): RepoType => {
+export const useRepoTypeState = (path?: string, deviceId?: string): RepoTypeState => {
   const currentDeviceId = useElectronStore((s) => s.gatewayDeviceInfo?.deviceId);
   const isLocalTarget = !deviceId || deviceId === currentDeviceId;
   const cacheDeviceId = deviceId ?? currentDeviceId;
@@ -105,5 +123,11 @@ export const useRepoType = (path?: string, deviceId?: string): RepoType => {
     syncWorkingDirRepoType,
   ]);
 
-  return probe ? probe.repoType : cached;
+  return probe
+    ? { repoType: probe.repoType, verified: true }
+    : { repoType: cached, verified: false };
 };
+
+/** {@link useRepoTypeState}'s type alone, for callers that need no "verified" distinction. */
+export const useRepoType = (path?: string, deviceId?: string): RepoType =>
+  useRepoTypeState(path, deviceId).repoType;

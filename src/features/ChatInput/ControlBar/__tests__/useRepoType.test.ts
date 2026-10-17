@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useDeviceStore } from '@/store/device';
 
-import { useRepoType } from '../useRepoType';
+import { resolveRepoType, useRepoType } from '../useRepoType';
 
 const rpc = vi.hoisted(() => ({
   detectLocalRepoType: vi.fn(),
@@ -290,5 +290,23 @@ describe('useRepoType', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('resolveRepoType', () => {
+  // The `.git` was removed but the dir is still there: the probe says "not a
+  // repo", and the topic's old snapshot must not bring the git chips back.
+  it('keeps a verified "not a repo" over the fallback', () => {
+    expect(resolveRepoType({ repoType: undefined, verified: true }, 'github')).toBeUndefined();
+  });
+
+  // A deleted worktree or an offline device cannot be probed.
+  it('falls back for a dir that could not be probed', () => {
+    expect(resolveRepoType({ repoType: undefined, verified: false }, 'github')).toBe('github');
+  });
+
+  it('prefers the probed or cached type over the fallback', () => {
+    expect(resolveRepoType({ repoType: 'git', verified: true }, 'github')).toBe('git');
+    expect(resolveRepoType({ repoType: 'git', verified: false }, 'github')).toBe('git');
   });
 });
