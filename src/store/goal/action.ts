@@ -358,6 +358,15 @@ export class GoalActionImpl {
     await this.refreshGoalGraph(goalId);
   };
 
+  /** Unfinished Tasks switch model with it, so their rows re-read too. */
+  setGoalTaskModel = async (
+    goalId: string,
+    modelConfig: { model: string; provider: string } | null,
+  ): Promise<void> => {
+    await goalService.setTaskModel(goalId, modelConfig);
+    await this.refreshGoalGraph(goalId);
+  };
+
   updateGoalRequirement = async (goalId: string, requirement: string): Promise<void> => {
     await goalService.updateRequirement(goalId, requirement);
     await this.refreshGoalGraph(goalId);

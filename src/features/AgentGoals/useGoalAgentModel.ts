@@ -9,6 +9,8 @@ import { homeAgentListSelectors } from '@/store/home/selectors';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
 
+type ModelConfig = { model: string; provider: string };
+
 interface UseGoalAgentModelParams {
   goalId: string;
   /**
@@ -19,81 +21,98 @@ interface UseGoalAgentModelParams {
 }
 
 /**
- * The goal's main agent, the model it plans with and the agent that does its
- * Tasks: what the pickers show and what a pick writes. The model falls back to
- * the agent's own until the goal overrides it.
+ * An agent's own model and runtime, which a goal slot shows until the goal
+ * overrides it. Hydrates the agent's config, since the surrounding page may be
+ * about another agent.
  */
-export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelParams) => {
-  const navigate = useWorkspaceAwareNavigate();
-  const agentId = useGoalStore((s) => goalSelectors.goalGraph(goalId)(s)?.goal.agentId);
-  const goalModel = useGoalStore((s) => goalSelectors.goalGraph(goalId)(s)?.goal.config?.model);
-  const goalProvider = useGoalStore(
-    (s) => goalSelectors.goalGraph(goalId)(s)?.goal.config?.provider,
-  );
-  const setGoalAgent = useGoalStore((s) => s.setGoalAgent);
-  const setGoalModel = useGoalStore((s) => s.setGoalModel);
-  const setGoalTaskAgent = useGoalStore((s) => s.setGoalTaskAgent);
-  // Unset means the main agent does the goal's Tasks itself.
-  const taskAgentId = useGoalStore(
-    (s) => goalSelectors.goalGraph(goalId)(s)?.goal.config?.taskAgentId,
+const useAgentOwnModel = (agentId?: string) => {
+  const isLogin = useUserStore(authSelectors.isLogin);
+  const useHydrateAgentConfig = useAgentStore((s) => s.useHydrateAgentConfig);
+  useHydrateAgentConfig(isLogin, agentId ?? '');
+  const model = useAgentStore((s) => agentByIdSelectors.getAgentModelById(agentId ?? '')(s));
+  const provider = useAgentStore((s) =>
+    agentByIdSelectors.getAgentModelProviderById(agentId ?? '')(s),
   );
   const heterogeneousType = useHomeStore(
     (s) => homeAgentListSelectors.getAgentById(agentId ?? '')(s)?.heterogeneousType,
   );
+  return { heterogeneousType, model, provider };
+};
 
-  // The fallback is the goal agent's own model, so its config has to be in the
-  // store even when the surrounding page is about another agent.
-  const isLogin = useUserStore(authSelectors.isLogin);
-  const useHydrateAgentConfig = useAgentStore((s) => s.useHydrateAgentConfig);
-  useHydrateAgentConfig(isLogin, agentId ?? '');
-  const agentModel = useAgentStore((s) => agentByIdSelectors.getAgentModelById(agentId ?? '')(s));
-  const agentProvider = useAgentStore((s) =>
-    agentByIdSelectors.getAgentModelProviderById(agentId ?? '')(s),
-  );
+/**
+ * Who plans the goal and who does its Tasks, each with the model it runs on:
+ * what the pickers show and what a pick writes. A model falls back to its
+ * agent's own until the goal overrides it.
+ */
+export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelParams) => {
+  const navigate = useWorkspaceAwareNavigate();
+  const graph = goalSelectors.goalGraph(goalId);
+  const agentId = useGoalStore((s) => graph(s)?.goal.agentId) ?? undefined;
+  // Unset means the main agent does the goal's Tasks itself.
+  const taskAgentId = useGoalStore((s) => graph(s)?.goal.config?.taskAgentId);
+  const planningModel = useGoalStore((s) => graph(s)?.goal.config?.model);
+  const planningProvider = useGoalStore((s) => graph(s)?.goal.config?.provider);
+  const taskModel = useGoalStore((s) => graph(s)?.goal.config?.taskModel);
+  const taskProvider = useGoalStore((s) => graph(s)?.goal.config?.taskProvider);
+  const setGoalAgent = useGoalStore((s) => s.setGoalAgent);
+  const setGoalModel = useGoalStore((s) => s.setGoalModel);
+  const setGoalTaskAgent = useGoalStore((s) => s.setGoalTaskAgent);
+  const setGoalTaskModel = useGoalStore((s) => s.setGoalTaskModel);
 
-  const changeAgent = async (next: string | null) => {
-    if (!next) return;
+  const planner = useAgentOwnModel(agentId);
+  const executor = useAgentOwnModel(taskAgentId ?? agentId);
+
+  const run = async (write: () => Promise<void>) => {
     try {
+      await write();
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+
+  // Picking the agent's own model is the same as not overriding it, and keeps
+  // the slot following that agent when its model changes later.
+  const overrideOf = (next: ModelConfig, own: { model?: string; provider?: string }) =>
+    next.model === own.model && next.provider === own.provider ? null : next;
+
+  const changeAgent = (next: string | null) =>
+    run(async () => {
+      if (!next) return;
       await setGoalAgent(goalId, next);
       if (routeAgentId && routeAgentId !== next)
         navigate(`/agent/${next}/goal/${goalId}`, { replace: true });
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
-  };
+    });
 
-  const changeModel = async (next: { model: string; provider: string }) => {
-    // Picking the agent's own model is the same as not overriding it, and keeps
-    // the goal following that agent when its model changes later.
-    const isAgentDefault = next.model === agentModel && next.provider === agentProvider;
-    try {
-      await setGoalModel(goalId, isAgentDefault ? null : next);
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
-  };
-
-  const changeTaskAgent = async (next: string | null) => {
-    // Naming the main agent is the same as clearing: it does its own Tasks.
-    const executor = next && next !== agentId ? next : null;
-    if (executor === (taskAgentId ?? null)) return;
-    try {
-      await setGoalTaskAgent(goalId, executor);
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
-  };
+  const changeTaskAgent = (next: string | null) =>
+    run(async () => {
+      // Naming the main agent is the same as clearing: it does its own Tasks.
+      const nextExecutor = next && next !== agentId ? next : null;
+      if (nextExecutor === (taskAgentId ?? null)) return;
+      await setGoalTaskAgent(goalId, nextExecutor);
+    });
 
   return {
-    agentId: agentId ?? undefined,
-    changeAgent,
-    changeModel,
-    changeTaskAgent,
-    heterogeneousType,
-    taskAgentId,
-    model: {
-      model: goalModel || agentModel || '',
-      provider: goalProvider || agentProvider || '',
+    executor: {
+      agentId: taskAgentId,
+      changeAgent: changeTaskAgent,
+      changeModel: (next: ModelConfig) =>
+        run(() => setGoalTaskModel(goalId, overrideOf(next, executor))),
+      heterogeneousType: executor.heterogeneousType,
+      model: {
+        model: taskModel || executor.model || '',
+        provider: taskProvider || executor.provider || '',
+      },
+    },
+    planner: {
+      agentId,
+      changeAgent,
+      changeModel: (next: ModelConfig) =>
+        run(() => setGoalModel(goalId, overrideOf(next, planner))),
+      heterogeneousType: planner.heterogeneousType,
+      model: {
+        model: planningModel || planner.model || '',
+        provider: planningProvider || planner.provider || '',
+      },
     },
   };
 };

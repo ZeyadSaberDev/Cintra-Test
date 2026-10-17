@@ -22,3 +22,12 @@ export const goalModelOverride = (config?: GoalConfig | null) => ({
   ...(config?.model && { model: config.model }),
   ...(config?.provider && { provider: config.provider }),
 });
+
+/**
+ * The goal's own pick for its Tasks, as Task config. Empty when the goal has
+ * none, so a new Task takes its executor's model as usual.
+ */
+export const goalTaskModelOverride = (config?: GoalConfig | null) => ({
+  ...(config?.taskModel && { model: config.taskModel }),
+  ...(config?.taskProvider && { provider: config.taskProvider }),
+});

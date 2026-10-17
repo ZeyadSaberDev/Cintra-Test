@@ -506,6 +506,14 @@ export interface GoalConfig {
    * Unset means the goal's agent does its own Tasks.
    */
   taskAgentId?: string;
+  /**
+   * The model the goal's Tasks run on, overriding their executor's own model.
+   * Applied to Tasks the coordinator creates and to unfinished ones when set.
+   * Written together with `taskProvider`, dropped when the executor changes.
+   */
+  taskModel?: string;
+  /** Provider of `taskModel`; set and cleared with it. */
+  taskProvider?: string;
   /** Coordinator-owned; written by decomposition, never by a policy edit. */
   understanding?: GoalUnderstanding;
 }

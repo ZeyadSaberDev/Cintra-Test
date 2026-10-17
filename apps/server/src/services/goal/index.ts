@@ -70,7 +70,7 @@ import { TaskService } from '../task';
 import { TaskRunnerService } from '../taskRunner';
 import { AcceptanceService } from '../verify/acceptanceService';
 import { VerifyPlanGeneratorService } from '../verify/planGenerator';
-import { GoalAssignmentService } from './assignment';
+import { GoalAssignmentService, goalTaskAgentId } from './assignment';
 import { BatchPlanSkillService, learnedRulesClause, planSkillIdentifier } from './batchPlanSkill';
 import { GoalCriteriaGeneratorService, type GoalDecompositionDraft } from './criteriaGenerator';
 import {
@@ -91,6 +91,7 @@ import { classifyGoalFailure, isMachineFailureClass } from './failureClass';
 import { GoalBriefService } from './goalBriefs';
 import { lastAnsweredGateAt, planMachineRecovery } from './machineRecovery';
 import { answeredProblem, GoalManagerService, problemKey } from './manager';
+import { goalTaskModelOverride } from './modelConfig';
 import {
   classifyRunFailure,
   countConsecutiveDeviceOfflineRuns,
@@ -1443,6 +1444,10 @@ export class GoalService {
   /** Pick the model planning turns run on; see `GoalAssignmentService.setModel`. */
   setModel: GoalAssignmentService['setModel'] = (...args) => this.assignment.setModel(...args);
 
+  /** Pick the model Tasks run on; see `GoalAssignmentService.setTaskModel`. */
+  setTaskModel: GoalAssignmentService['setTaskModel'] = (...args) =>
+    this.assignment.setTaskModel(...args);
+
   /** Route Tasks to a dedicated executor; see `GoalAssignmentService.setTaskAgent`. */
   setTaskAgent: GoalAssignmentService['setTaskAgent'] = (...args) =>
     this.assignment.setTaskAgent(...args);
@@ -1533,9 +1538,12 @@ export class GoalService {
         : await this.goalModel.update(goalId, { agentId: options.agentId });
       if (!updated) throw new TRPCError({ code: 'NOT_FOUND', message: 'Goal not found' });
       goal =
-        !goal.config?.taskAgentId && goal.agentId !== options.agentId
-          ? await this.assignment.dropModelOverride(updated)
-          : updated;
+        goalTaskAgentId(goal) === options.agentId
+          ? updated
+          : await this.assignment.dropModelOverride(
+              updated,
+              goal.config?.taskAgentId ? ['task'] : ['planning', 'task'],
+            );
     }
 
     // A restart is an explicit "start over": a goal parked by a budget stop or
@@ -2801,6 +2809,7 @@ export class GoalService {
         assigneeAgentId: await this.resolveTaskAssignee(graph.goal),
         config: {
           checkpoint: { topic: { after: false } },
+          ...goalTaskModelOverride(graph.goal.config),
           ...(planSkill ? { skills: [planSkillIdentifier(planSkill)] } : {}),
         },
         description: description?.slice(0, TASK_DESCRIPTION_MAX_LENGTH),

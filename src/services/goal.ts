@@ -143,6 +143,10 @@ class GoalService {
   setModel = async (id: string, modelConfig: { model: string; provider: string } | null) =>
     lambdaClient.goal.setModel.mutate({ id, modelConfig });
 
+  /** The model the goal's Tasks run on; `null` falls back to their executor's own. */
+  setTaskModel = async (id: string, modelConfig: { model: string; provider: string } | null) =>
+    lambdaClient.goal.setTaskModel.mutate({ id, modelConfig });
+
   setBudget = async (params: {
     deadline?: string | null;
     id: string;

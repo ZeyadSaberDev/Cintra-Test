@@ -8,6 +8,7 @@ import { TaskModel } from '@/database/models/task';
 import type { LobeChatDatabase } from '@/database/type';
 import { assertAgentUsableBy } from '@/database/utils/agent-access';
 
+import { resolveMissingTaskModelConfig } from '../task/modelSnapshot';
 import { GoalManagerService } from './manager';
 
 /** Who does the goal's Tasks: its dedicated executor, else the goal agent itself. */
@@ -15,6 +16,8 @@ export const goalTaskAgentId = (goal: Pick<GoalItem, 'agentId' | 'config'>) =>
   goal.config?.taskAgentId ?? goal.agentId ?? undefined;
 
 const goalNotFound = () => new TRPCError({ code: 'NOT_FOUND', message: 'Goal not found' });
+
+type ModelConfig = { model: string; provider: string };
 
 /**
  * Who works on a goal and with which model: the goal agent that supervises and
@@ -62,7 +65,15 @@ export class GoalAssignmentService {
     if (!previous) throw goalNotFound();
     const updated = await this.goalModel.update(goalId, { agentId });
     if (!updated) throw goalNotFound();
-    const goal = previous.agentId === agentId ? updated : await this.dropModelOverride(updated);
+    // Without a dedicated executor the goal agent also does the Tasks, so the
+    // executor changed too and its Task model goes with the planning one.
+    const goal =
+      previous.agentId === agentId
+        ? updated
+        : await this.dropModelOverride(
+            updated,
+            updated.config?.taskAgentId ? ['planning'] : ['planning', 'task'],
+          );
 
     // The receipt carries the management topic, so the caller must get the row
     // with the migrated one — not the copy read before the handoff.
@@ -84,23 +95,53 @@ export class GoalAssignmentService {
    * model with `null`. Only planning turns read it — Tasks keep their own model
    * — and a turn already running keeps the model it started on.
    */
-  setModel = async (
-    goalId: string,
-    modelConfig: { model: string; provider: string } | null,
-  ): Promise<GoalItem> => {
+  setModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> => {
     const goal = await this.goalModel.updateModelConfig(goalId, modelConfig);
     if (!goal) throw goalNotFound();
     return goal;
   };
 
   /**
-   * A model override was picked against the previous agent — its provider, or a
-   * runtime that agent does not share — so a new goal agent starts from its own.
+   * Pick the model the goal's Tasks run on, or fall back to their executor's own
+   * model with `null`. Tasks the coordinator creates from here on are pinned to
+   * it, and unfinished ones switch with it; a run already going keeps its model.
    */
-  dropModelOverride = async (goal: GoalItem) =>
-    goal.config?.model || goal.config?.provider
-      ? ((await this.goalModel.updateModelConfig(goal.id, null)) ?? goal)
-      : goal;
+  setTaskModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> => {
+    const goal = await this.goalModel.updateModelConfig(goalId, modelConfig, 'task');
+    if (!goal) throw goalNotFound();
+    const executor = await this.resolveTaskAssignee(goal);
+    const next = modelConfig ?? (executor ? await this.agentModelOf(executor) : undefined);
+    if (next) {
+      for (const task of await this.unfinishedTasks(goalId))
+        await this.taskModel.updateTaskConfig(task.id, next);
+    }
+    return goal;
+  };
+
+  /**
+   * A model override was picked against the previous agent — its provider, or a
+   * runtime that agent does not share — so a new agent starts from its own.
+   */
+  dropModelOverride = async (goal: GoalItem, slots: ('planning' | 'task')[]) => {
+    let current = goal;
+    for (const slot of slots) {
+      const [model, provider] =
+        slot === 'task'
+          ? [current.config?.taskModel, current.config?.taskProvider]
+          : [current.config?.model, current.config?.provider];
+      if (model || provider)
+        current = (await this.goalModel.updateModelConfig(goal.id, null, slot)) ?? current;
+    }
+    return current;
+  };
+
+  /** The model a Task assigned to this agent would be created with. */
+  private agentModelOf = async (agentId: string): Promise<Partial<ModelConfig> | undefined> => {
+    const info = await this.agentModel.getAgentSnapshotForTaskCreate(agentId);
+    return info?.snapshot
+      ? resolveMissingTaskModelConfig({}, info.snapshot, info.modelOverrideProvider)
+      : undefined;
+  };
 
   /**
    * After the goal agent changed: when that agent also does the goal's Tasks,
@@ -127,11 +168,15 @@ export class GoalAssignmentService {
     const current = await this.goalModel.findById(goalId);
     if (!current) throw goalNotFound();
     // Naming the goal agent itself is the same as clearing: one agent, one slot.
-    const goal = await this.goalModel.updateTaskAgentId(
+    const updated = await this.goalModel.updateTaskAgentId(
       goalId,
       agentId && agentId !== current.agentId ? agentId : null,
     );
-    if (!goal) throw goalNotFound();
+    if (!updated) throw goalNotFound();
+    const goal =
+      goalTaskAgentId(updated) === goalTaskAgentId(current)
+        ? updated
+        : await this.dropModelOverride(updated, ['task']);
 
     const assignee = goalTaskAgentId(goal);
     const reassignedTaskIds =
@@ -162,16 +207,25 @@ export class GoalAssignmentService {
    * current operation; `runTask` reads the assignee at its next dispatch.
    */
   private reassignUnfinishedTasks = async (goalId: string, agentId: string) => {
-    const graph = await this.graphModel.getGraph(goalId);
-    if (!graph) throw goalNotFound();
-    const taskIds = graph.nodes.flatMap((node) => (node.taskId ? [node.taskId] : []));
+    // A moved Task takes its new executor's model, the one it would have been
+    // created with; the previous executor's snapshot may name another runtime.
+    const model = await this.agentModelOf(agentId);
     const reassigned: string[] = [];
-    for (const task of await this.taskModel.findByIds(taskIds)) {
-      if (task.status === 'completed' || task.status === 'canceled') continue;
+    for (const task of await this.unfinishedTasks(goalId)) {
       if (task.assigneeAgentId === agentId) continue;
       await this.taskModel.update(task.id, { assigneeAgentId: agentId });
+      if (model) await this.taskModel.updateTaskConfig(task.id, model);
       reassigned.push(task.id);
     }
     return reassigned;
+  };
+
+  private unfinishedTasks = async (goalId: string) => {
+    const graph = await this.graphModel.getGraph(goalId);
+    if (!graph) throw goalNotFound();
+    const taskIds = graph.nodes.flatMap((node) => (node.taskId ? [node.taskId] : []));
+    return (await this.taskModel.findByIds(taskIds)).filter(
+      (task) => task.status !== 'completed' && task.status !== 'canceled',
+    );
   };
 }

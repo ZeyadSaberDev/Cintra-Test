@@ -89,4 +89,27 @@ export const goalAssignmentProcedures = {
         mapGoalError(error, 'setModel');
       }
     }),
+
+  /**
+   * Pick the model the goal's Tasks run on (`null` falls back to their
+   * executor's own). Unfinished Tasks switch with it.
+   */
+  setTaskModel: goalWriteProcedure
+    .input(
+      idInput.extend({
+        modelConfig: z.object({ model: z.string().min(1), provider: z.string().min(1) }).nullable(),
+      }),
+    )
+    .mutation(async ({ ctx, input: { id, modelConfig } }) => {
+      try {
+        const goal = await ctx.goalModel.findById(id);
+        if (!goal) throw new TRPCError({ code: 'NOT_FOUND', message: 'Goal not found' });
+        assertWorkspaceRowManageable(ctx, goal.userId, 'goal');
+
+        const data = await ctx.goalService.setTaskModel(id, modelConfig);
+        return { data, message: 'Goal task model updated', success: true };
+      } catch (error) {
+        mapGoalError(error, 'setTaskModel');
+      }
+    }),
 };

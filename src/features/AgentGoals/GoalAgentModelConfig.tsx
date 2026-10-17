@@ -1,4 +1,14 @@
-import { Block, cssVar, Flexbox, Text, Tooltip, useThemeMode } from '@lobehub/ui';
+import {
+  ActionIcon,
+  Block,
+  cssVar,
+  Flexbox,
+  Popover,
+  Text,
+  Tooltip,
+  useThemeMode,
+} from '@lobehub/ui';
+import { Settings2Icon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import AssigneeAgentSelector from '@/features/AgentTasks/features/AssigneeAgentSelector';
@@ -11,11 +21,15 @@ import { homeAgentListSelectors } from '@/store/home/selectors';
 
 import { useGoalAgentModel } from './useGoalAgentModel';
 
+type ModelConfig = { model: string; provider: string };
+
 interface AgentPillProps {
   agentId?: string;
   disabled?: boolean;
   /** Names the role, since the planner and executor pills sit side by side. */
   label: string;
+  /** The model this role runs on, behind the pill's settings button. */
+  model?: { onChange: (next: ModelConfig) => void; title: string; value: ModelConfig };
   onChange: (agentId: string | null) => void;
   /** Shown instead of an agent when the slot falls back to another one. */
   placeholder?: string;
@@ -26,6 +40,7 @@ const AgentPill = ({
   agentId,
   disabled,
   label,
+  model,
   onChange,
   placeholder,
   tooltip,
@@ -37,40 +52,71 @@ const AgentPill = ({
   );
 
   return (
-    <AssigneeAgentSelector
-      allowUnassigned={false}
-      currentAgentId={agentId}
-      disabled={disabled}
-      onChange={onChange}
+    <Block
+      horizontal
+      align={'center'}
+      gap={2}
+      padding={2}
+      style={{ flex: 'none', maxWidth: '100%', minHeight: 32 }}
+      variant={isDarkMode ? 'filled' : 'outlined'}
     >
-      <Tooltip title={tooltip}>
-        <Block
-          clickable
-          horizontal
-          align={'center'}
-          gap={8}
-          paddingBlock={4}
-          paddingInline={11}
-          style={{ flex: 'none', maxWidth: '100%', minHeight: 32 }}
-          variant={isDarkMode ? 'filled' : 'outlined'}
-        >
-          <Text style={{ color: cssVar.colorTextDescription }}>{label}</Text>
-          {agentId ? (
-            <>
-              <AssigneeAvatar agentId={agentId} size={20} />
-              <Text ellipsis weight={500}>
-                {meta?.title}
+      <AssigneeAgentSelector
+        allowUnassigned={false}
+        currentAgentId={agentId}
+        disabled={disabled}
+        onChange={onChange}
+      >
+        <Tooltip title={tooltip}>
+          <Block
+            clickable
+            horizontal
+            align={'center'}
+            gap={8}
+            paddingBlock={2}
+            paddingInline={8}
+            style={{ minHeight: 26 }}
+            variant={'borderless'}
+          >
+            <Text style={{ color: cssVar.colorTextDescription }}>{label}</Text>
+            {agentId ? (
+              <>
+                <AssigneeAvatar agentId={agentId} size={20} />
+                <Text ellipsis weight={500}>
+                  {meta?.title}
+                </Text>
+                <HeterogeneousTag type={heterogeneousType} />
+              </>
+            ) : (
+              <Text style={{ color: cssVar.colorTextDescription }} weight={500}>
+                {placeholder}
               </Text>
-              <HeterogeneousTag type={heterogeneousType} />
-            </>
-          ) : (
-            <Text style={{ color: cssVar.colorTextDescription }} weight={500}>
-              {placeholder}
-            </Text>
-          )}
-        </Block>
-      </Tooltip>
-    </AssigneeAgentSelector>
+            )}
+          </Block>
+        </Tooltip>
+      </AssigneeAgentSelector>
+      {model && (
+        <Popover
+          placement={'bottomLeft'}
+          trigger={'click'}
+          content={
+            <Flexbox gap={8}>
+              <Text fontSize={12} type={'secondary'}>
+                {model.title}
+              </Text>
+              <ModelSelect
+                initialWidth
+                disabled={disabled}
+                popupWidth={400}
+                value={model.value}
+                onChange={model.onChange}
+              />
+            </Flexbox>
+          }
+        >
+          <ActionIcon icon={Settings2Icon} size={'small'} title={model.title} />
+        </Popover>
+      )}
+    </Block>
   );
 };
 
@@ -83,51 +129,48 @@ interface GoalAgentModelConfigProps {
 }
 
 /**
- * Who plans the goal and on which model, and who does its Tasks — like a Task's
- * assignee and model. The model only drives planning turns; Tasks keep their own.
+ * Who plans the goal and who does its Tasks, each with the model it runs on
+ * behind a settings button — like a Task's assignee and model.
  */
 const GoalAgentModelConfig = ({ disabled, goalId, routeAgentId }: GoalAgentModelConfigProps) => {
   const { t } = useTranslation('chat');
-  const {
-    agentId,
-    changeAgent,
-    changeModel,
-    changeTaskAgent,
-    heterogeneousType,
-    model,
-    taskAgentId,
-  } = useGoalAgentModel({ goalId, routeAgentId });
+  const { executor, planner } = useGoalAgentModel({ goalId, routeAgentId });
 
   return (
     <Flexbox horizontal align={'center'} gap={8} style={{ minWidth: 0 }} wrap={'wrap'}>
       <AgentPill
-        agentId={agentId}
+        agentId={planner.agentId}
         disabled={disabled}
         label={t('goalDetail.mainAgentLabel')}
         tooltip={t('goalDetail.mainAgent')}
-        onChange={changeAgent}
+        // An external runtime brings its own model, not a provider model.
+        model={
+          planner.agentId && !planner.heterogeneousType
+            ? {
+                onChange: planner.changeModel,
+                title: t('goalDetail.planningModel'),
+                value: planner.model,
+              }
+            : undefined
+        }
+        onChange={planner.changeAgent}
       />
-      {/* An external runtime brings its own model, not a provider model. */}
-      {agentId && !heterogeneousType && (
-        <Tooltip title={t('goalDetail.planningModel')}>
-          <div>
-            <ModelSelect
-              initialWidth
-              disabled={disabled}
-              popupWidth={400}
-              value={model}
-              onChange={changeModel}
-            />
-          </div>
-        </Tooltip>
-      )}
       <AgentPill
-        agentId={taskAgentId}
+        agentId={executor.agentId}
         disabled={disabled}
         label={t('goalDetail.taskAgentLabel')}
         placeholder={t('goalDetail.taskAgentFollowsMain')}
         tooltip={t('goalDetail.taskAgent')}
-        onChange={changeTaskAgent}
+        model={
+          planner.agentId && !executor.heterogeneousType
+            ? {
+                onChange: executor.changeModel,
+                title: t('goalDetail.taskModel'),
+                value: executor.model,
+              }
+            : undefined
+        }
+        onChange={executor.changeAgent}
       />
     </Flexbox>
   );

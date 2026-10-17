@@ -158,19 +158,27 @@ export class GoalModel {
   };
 
   /**
-   * Patch only `config.model` / `config.provider` (or drop both with `null`),
-   * for the same reason as `updateTaskAgentId`.
+   * Patch only one model slot of `config` — `model`/`provider` for planning
+   * turns, `taskModel`/`taskProvider` for Tasks — or drop it with `null`, for
+   * the same reason as `updateTaskAgentId`.
    */
   updateModelConfig = async (
     id: string,
     modelConfig: { model: string; provider: string } | null,
+    slot: 'planning' | 'task' = 'planning',
   ) => {
+    const [modelKey, providerKey] =
+      slot === 'task' ? ['taskModel', 'taskProvider'] : ['model', 'provider'];
+    const patch = modelConfig && {
+      [modelKey]: modelConfig.model,
+      [providerKey]: modelConfig.provider,
+    };
     const [row] = await this.db
       .update(goals)
       .set({
-        config: modelConfig
-          ? sql`COALESCE(${goals.config}, '{}'::jsonb) || ${JSON.stringify(modelConfig)}::jsonb`
-          : sql`COALESCE(${goals.config}, '{}'::jsonb) - 'model' - 'provider'`,
+        config: patch
+          ? sql`COALESCE(${goals.config}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`
+          : sql`COALESCE(${goals.config}, '{}'::jsonb) - ${modelKey}::text - ${providerKey}::text`,
         updatedAt: new Date(),
       })
       .where(and(eq(goals.id, id), this.ownership()))
