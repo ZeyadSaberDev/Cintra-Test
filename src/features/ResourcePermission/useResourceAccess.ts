@@ -4,6 +4,7 @@ import { resourcePermissionKeys } from '@/libs/swr/keys';
 import { getCacheScope } from '@/libs/swr/useCacheScope';
 import type { PermissionResourceType } from '@/services/resourcePermission';
 import { resourcePermissionService } from '@/services/resourcePermission';
+import { isTrpcErrorCode } from '@/utils/trpcError';
 
 /**
  * Resources whose access record the server has returned during this page
@@ -27,6 +28,15 @@ export class AccessScopeChangedError extends Error {
   }
 }
 
+/**
+ * Refresh failures that are the server's answer rather than a transport fault:
+ * the resource went private, left the workspace, or the caller lost access.
+ */
+const isAccessDenialError = (error: unknown) =>
+  isTrpcErrorCode(error, 'NOT_FOUND') ||
+  isTrpcErrorCode(error, 'FORBIDDEN') ||
+  isTrpcErrorCode(error, 'UNAUTHORIZED');
+
 /** Fetch the General-access record and remember that this session confirmed it. */
 export const fetchGeneralAccess = async (
   resourceType: PermissionResourceType,
@@ -35,12 +45,22 @@ export const fetchGeneralAccess = async (
   // The scope the request was issued under, not whichever one is active when
   // it settles.
   const scope = getCacheScope();
-  const result = await resourcePermissionService.getGeneralAccess(resourceType, resourceId);
+  const key = sessionKey(scope, resourceType, resourceId);
+  let result: Awaited<ReturnType<typeof resourcePermissionService.getGeneralAccess>>;
+  try {
+    result = await resourcePermissionService.getGeneralAccess(resourceType, resourceId);
+  } catch (error) {
+    // SWR keeps the last record through a failed refresh. A transient fault
+    // leaves this session's confirmation intact, but a denial means that
+    // record no longer holds, so it must stop vouching for management.
+    if (isAccessDenialError(error)) confirmedThisSession.delete(key);
+    throw error;
+  }
   // The SWR key carries no user id, so after an in-place account switch the
   // previous user's answer would land in (and persist to) the new user's
   // partition. Reject it; the scope reload revalidates under the new identity.
   if (getCacheScope() !== scope) throw new AccessScopeChangedError();
-  confirmedThisSession.add(sessionKey(scope, resourceType, resourceId));
+  confirmedThisSession.add(key);
   return result;
 };
 
@@ -78,11 +98,13 @@ export const useResourceAccess = (
     () => fetchGeneralAccess(resourceType, resourceId!),
   );
 
+  // A later transient refresh error keeps SWR's settled record, and this
+  // session already fetched it successfully, so it stays confirmed; a record
+  // never fetched this session (a cached grant from an earlier boot) or one the
+  // server has since denied (`fetchGeneralAccess` drops it) is unconfirmed.
   const isAccessConfirmed =
     !enabled ||
-    (!!data &&
-      !error &&
-      confirmedThisSession.has(sessionKey(getCacheScope(), resourceType, resourceId!)));
+    (!!data && confirmedThisSession.has(sessionKey(getCacheScope(), resourceType, resourceId!)));
 
   return {
     accessError: error,

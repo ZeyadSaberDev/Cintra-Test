@@ -12,6 +12,7 @@ import {
 
 const testState = vi.hoisted(() => ({
   data: undefined as ResourceGeneralAccess | undefined,
+  error: undefined as Error | undefined,
   fetcher: undefined as (() => Promise<ResourceGeneralAccess>) | undefined,
   getGeneralAccess: vi.fn(),
   hasActiveWorkspace: true,
@@ -36,7 +37,7 @@ vi.mock('@/libs/swr', () => ({
     testState.fetcher = fetcher;
     return {
       data: testState.data,
-      error: undefined,
+      error: testState.error,
       isLoading: false,
       isValidating: testState.isValidating,
       mutate: vi.fn(),
@@ -64,6 +65,7 @@ describe('useResourceAccess', () => {
   beforeEach(() => {
     resetConfirmedAccessForTest();
     testState.data = undefined;
+    testState.error = undefined;
     testState.fetcher = undefined;
     testState.getGeneralAccess.mockReset();
     testState.hasActiveWorkspace = true;
@@ -191,5 +193,66 @@ describe('useResourceAccess', () => {
     testState.data = record({ canManage: true });
     const { result } = renderHook(() => useResourceAccess('agent', 'agent-1'));
     expect(result.current).toMatchObject({ canManageResource: false, isAccessConfirmed: false });
+  });
+
+  // Regression: a failed focus/reconnect refresh set `error` on a record this
+  // session had already confirmed, which revoked management and replaced a
+  // live manage-only page with a full-page error.
+  it('keeps a session-confirmed manager grant through a later refresh error', async () => {
+    testState.data = record({ canManage: true });
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    await revalidate(record({ canManage: true }));
+    testState.error = new Error('network');
+    rerender();
+
+    expect(result.current).toMatchObject({ canManageResource: true, isAccessConfirmed: true });
+  });
+
+  it('still blocks an unconfirmed cached manager grant when its refresh fails', () => {
+    testState.data = record({ canManage: true });
+    testState.error = new Error('network');
+
+    const { result } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    expect(result.current).toMatchObject({ canManageResource: false, isAccessConfirmed: false });
+  });
+
+  // Security: the refresh that follows a revocation can fail with a denial
+  // (resource made private, moved out of the workspace, member removed). The
+  // stale manager record SWR keeps must not stay confirmed through it.
+  it.each(['NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED'])(
+    'revokes a session-confirmed manager grant when a refresh is denied with %s',
+    async (code) => {
+      testState.data = record({ canManage: true });
+      const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+      await revalidate(record({ canManage: true }));
+      rerender();
+      expect(result.current.canManageResource).toBe(true);
+
+      const denial = Object.assign(new Error('denied'), { data: { code } });
+      testState.getGeneralAccess.mockRejectedValueOnce(denial);
+      await expect(testState.fetcher!()).rejects.toBe(denial);
+      testState.error = denial;
+      rerender();
+
+      expect(result.current).toMatchObject({ canManageResource: false, isAccessConfirmed: false });
+    },
+  );
+
+  it('keeps a session-confirmed manager grant when the refresh fails transiently', async () => {
+    testState.data = record({ canManage: true });
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+    await revalidate(record({ canManage: true }));
+
+    const outage = Object.assign(new Error('bad gateway'), {
+      data: { code: 'INTERNAL_SERVER_ERROR' },
+    });
+    testState.getGeneralAccess.mockRejectedValueOnce(outage);
+    await expect(testState.fetcher!()).rejects.toBe(outage);
+    testState.error = outage;
+    rerender();
+
+    expect(result.current).toMatchObject({ canManageResource: true, isAccessConfirmed: true });
   });
 });
