@@ -255,4 +255,59 @@ describe('useResourceAccess', () => {
 
     expect(result.current).toMatchObject({ canManageResource: true, isAccessConfirmed: true });
   });
+
+  // Security: a denied refresh (resource made private, deleted, moved out of
+  // the workspace, member removed) must fail edit/use closed too, not just
+  // management, even though SWR keeps the previous editable record.
+  it.each(['NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED'])(
+    'fails edit/use closed for a retained record once a refresh is denied with %s',
+    async (code) => {
+      testState.data = record({ accessLevel: 'edit', canManage: true });
+      const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+      expect(result.current).toMatchObject({ canEditResource: true, canUseResource: true });
+
+      const denial = Object.assign(new Error('denied'), { data: { code } });
+      testState.getGeneralAccess.mockRejectedValueOnce(denial);
+      await expect(testState.fetcher!()).rejects.toBe(denial);
+      testState.error = denial;
+      rerender();
+
+      expect(result.current).toMatchObject({
+        canEditResource: false,
+        canManageResource: false,
+        canUseResource: false,
+        isAccessResolved: true,
+      });
+    },
+  );
+
+  it('restores access once a refresh after a denial succeeds', async () => {
+    testState.data = record({ accessLevel: 'edit' });
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    const denial = Object.assign(new Error('denied'), { data: { code: 'NOT_FOUND' } });
+    testState.getGeneralAccess.mockRejectedValueOnce(denial);
+    await expect(testState.fetcher!()).rejects.toBe(denial);
+    testState.error = denial;
+    rerender();
+    expect(result.current.canEditResource).toBe(false);
+
+    await revalidate(record({ accessLevel: 'edit' }));
+    testState.error = undefined;
+    rerender();
+    expect(result.current).toMatchObject({ canEditResource: true, canUseResource: true });
+  });
+
+  it('keeps edit/use from the retained record through a transient refresh failure', async () => {
+    testState.data = record({ accessLevel: 'edit' });
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    const outage = Object.assign(new Error('timeout'), { data: { code: 'TIMEOUT' } });
+    testState.getGeneralAccess.mockRejectedValueOnce(outage);
+    await expect(testState.fetcher!()).rejects.toBe(outage);
+    testState.error = outage;
+    rerender();
+
+    expect(result.current).toMatchObject({ canEditResource: true, canUseResource: true });
+  });
 });

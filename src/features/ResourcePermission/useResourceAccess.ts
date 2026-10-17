@@ -17,6 +17,13 @@ import { isTrpcErrorCode } from '@/utils/trpcError';
  */
 const confirmedThisSession = new Set<string>();
 
+/**
+ * Resources whose latest refresh this session the server denied (see
+ * `isAccessDenialError`). SWR keeps the previous record through that failed
+ * refresh, so these fail every check closed until a later fetch succeeds.
+ */
+const deniedThisSession = new Set<string>();
+
 const sessionKey = (scope: string, resourceType: PermissionResourceType, resourceId: string) =>
   `${scope}|${resourceType}:${resourceId}`;
 
@@ -52,8 +59,11 @@ export const fetchGeneralAccess = async (
   } catch (error) {
     // SWR keeps the last record through a failed refresh. A transient fault
     // leaves this session's confirmation intact, but a denial means that
-    // record no longer holds, so it must stop vouching for management.
-    if (isAccessDenialError(error)) confirmedThisSession.delete(key);
+    // record no longer holds, so it must stop vouching for any access.
+    if (isAccessDenialError(error)) {
+      confirmedThisSession.delete(key);
+      deniedThisSession.add(key);
+    }
     throw error;
   }
   // The SWR key carries no user id, so after an in-place account switch the
@@ -61,11 +71,15 @@ export const fetchGeneralAccess = async (
   // partition. Reject it; the scope reload revalidates under the new identity.
   if (getCacheScope() !== scope) throw new AccessScopeChangedError();
   confirmedThisSession.add(key);
+  deniedThisSession.delete(key);
   return result;
 };
 
 /** Test-only: forget which records this session has confirmed. */
-export const resetConfirmedAccessForTest = () => confirmedThisSession.clear();
+export const resetConfirmedAccessForTest = () => {
+  confirmedThisSession.clear();
+  deniedThisSession.clear();
+};
 
 /**
  * Read-side derivation of the workspace General-access level for a resource.
@@ -102,17 +116,21 @@ export const useResourceAccess = (
   // session already fetched it successfully, so it stays confirmed; a record
   // never fetched this session (a cached grant from an earlier boot) or one the
   // server has since denied (`fetchGeneralAccess` drops it) is unconfirmed.
-  const isAccessConfirmed =
-    !enabled ||
-    (!!data && confirmedThisSession.has(sessionKey(getCacheScope(), resourceType, resourceId!)));
+  const key = enabled ? sessionKey(getCacheScope(), resourceType, resourceId!) : '';
+  const isAccessConfirmed = !enabled || (!!data && confirmedThisSession.has(key));
+  // A server denial outranks the record SWR retained: nothing derived from it
+  // may stay enabled, and the access counts as resolved (to "no access").
+  const isDenied = enabled && deniedThisSession.has(key);
 
   return {
     accessError: error,
-    canEditResource: !enabled || !data ? true : data.canManage || data.accessLevel === 'edit',
+    canEditResource:
+      !enabled || (!isDenied && (!data ? true : data.canManage || data.accessLevel === 'edit')),
     canManageResource: !enabled || (isAccessConfirmed && data?.canManage === true),
-    canUseResource: !enabled || !data ? true : data.canManage || data.accessLevel !== 'view',
+    canUseResource:
+      !enabled || (!isDenied && (!data ? true : data.canManage || data.accessLevel !== 'view')),
     isAccessConfirmed,
-    isAccessResolved: !enabled || !!data,
+    isAccessResolved: !enabled || isDenied || !!data,
     isLoading,
     isValidating,
     retryAccess: mutate,
