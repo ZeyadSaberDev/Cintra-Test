@@ -11,6 +11,7 @@ import { useRepoType } from '../useRepoType';
 const rpc = vi.hoisted(() => ({
   detectLocalRepoType: vi.fn(),
   getLocalFileStats: vi.fn(),
+  refreshDeviceList: vi.fn(),
   setWorkspaceDeviceWorkingDirRepoType: vi.fn(),
   statPath: vi.fn(),
   updateDevice: vi.fn(),
@@ -23,6 +24,13 @@ vi.mock('@lobechat/const', async (importOriginal) => ({
 
 vi.mock('@/business/client/hooks/useActiveWorkspaceId', () => ({
   useActiveWorkspaceId: () => 'test-workspace',
+}));
+
+// The device-list revalidation that follows every write; a case can make it
+// bring back what the server still stores.
+vi.mock('@/features/DeviceManager/const', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  refreshDeviceList: () => rpc.refreshDeviceList(),
 }));
 
 vi.mock('@/libs/trpc/client', () => ({
@@ -86,6 +94,7 @@ describe('useRepoType', () => {
     vi.clearAllMocks();
     rpc.setWorkspaceDeviceWorkingDirRepoType.mockResolvedValue({ success: true });
     rpc.updateDevice.mockResolvedValue({ success: true });
+    rpc.refreshDeviceList.mockResolvedValue(undefined);
     useDeviceStore.setState({ devices: [] });
   });
 
@@ -241,5 +250,45 @@ describe('useRepoType', () => {
         workingDirs: [{ path: '/local/repo-removed' }],
       }),
     );
+  });
+
+  // A network blip on the write: the revalidation brings the stale entry back
+  // and the store holds the correction back for a while. The mounted hook has
+  // to retry by itself once that delay runs out, not wait for a remount.
+  it('retries a transiently failed correction while it stays mounted', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const stale = device('remote-retry', [{ path: '/srv/retry-later' }]);
+      useDeviceStore.setState({ devices: [stale] });
+      rpc.statPath.mockResolvedValue({ exists: true, isDirectory: true, repoType: 'github' });
+      rpc.setWorkspaceDeviceWorkingDirRepoType.mockRejectedValueOnce(new Error('fetch failed'));
+      rpc.refreshDeviceList.mockImplementationOnce(async () => {
+        useDeviceStore.setState({ devices: [stale] });
+      });
+
+      const { result } = renderRepoType('/srv/retry-later', 'remote-retry');
+
+      await waitFor(() =>
+        expect(rpc.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() =>
+        expect(workingDirsOf('remote-retry')).toEqual([{ path: '/srv/retry-later' }]),
+      );
+      expect(result.current).toBe('github');
+      expect(rpc.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61 * 1000);
+      });
+
+      await waitFor(() =>
+        expect(rpc.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(2),
+      );
+      expect(workingDirsOf('remote-retry')).toEqual([
+        { path: '/srv/retry-later', repoType: 'github' },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

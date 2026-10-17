@@ -1,6 +1,6 @@
 import { isDesktop } from '@lobechat/const';
 import { getWorkingDirEffectivePath } from '@lobechat/types';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useClientDataSWR } from '@/libs/swr';
 import { deviceKeys } from '@/libs/swr/keys';
@@ -67,15 +67,43 @@ export const useRepoType = (path?: string, deviceId?: string): RepoType => {
   );
 
   const syncWorkingDirRepoType = useDeviceStore((s) => s.syncWorkingDirRepoType);
+  // Bumped when a held-back correction may be sent again: nothing else this
+  // effect depends on changes when the store's retry delay runs out.
+  const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
     if (!path || !probe) return;
     if (isLocalTarget) setRecentDirRepoType(path, probe.repoType);
     if (!cacheDeviceId || !isListed || probe.repoType === fromDevice) return;
-    syncWorkingDirRepoType(cacheDeviceId, path, probe.repoType).catch((error) => {
-      console.error('Failed to sync working directory repo type', error);
-    });
-  }, [cacheDeviceId, fromDevice, isListed, isLocalTarget, path, probe, syncWorkingDirRepoType]);
+
+    let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    syncWorkingDirRepoType(cacheDeviceId, path, probe.repoType)
+      .then((retryAt) => {
+        if (disposed || retryAt === undefined || !Number.isFinite(retryAt)) return;
+        retryTimer = setTimeout(
+          () => setRetryTick((tick) => tick + 1),
+          Math.max(retryAt - Date.now(), 0),
+        );
+      })
+      .catch((error) => {
+        console.error('Failed to sync working directory repo type', error);
+      });
+
+    return () => {
+      disposed = true;
+      clearTimeout(retryTimer);
+    };
+  }, [
+    cacheDeviceId,
+    fromDevice,
+    isListed,
+    isLocalTarget,
+    path,
+    probe,
+    retryTick,
+    syncWorkingDirRepoType,
+  ]);
 
   return probe ? probe.repoType : cached;
 };

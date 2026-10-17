@@ -217,19 +217,24 @@ export class DeviceActionImpl {
    * when the server refused it (a viewer cannot edit a shared device), for
    * `REPO_TYPE_SYNC_RETRY_MS` after a transient failure. A write that succeeds
    * holds nothing back, so a later legitimate change to the same value is sent.
+   *
+   * Resolves, when the correction was held back, the time it may be sent again
+   * (`Infinity` for never) so a caller can schedule the retry; otherwise
+   * `undefined`.
    */
   syncWorkingDirRepoType = async (
     deviceId: string,
     path: string,
     repoType: WorkingDirRepoType | undefined,
-  ): Promise<void> => {
+  ): Promise<number | undefined> => {
     const device = this.#get().devices.find((d) => d.deviceId === deviceId);
     if (!device) return;
     const updated = setWorkingDirRepoType(device.workingDirs ?? [], path, repoType);
     if (!updated) return;
 
     const syncKey = JSON.stringify([deviceId, path, repoType ?? null]);
-    if ((this.#repoTypeSyncBlockedUntil.get(syncKey) ?? 0) > Date.now()) return;
+    const blockedUntil = this.#repoTypeSyncBlockedUntil.get(syncKey) ?? 0;
+    if (blockedUntil > Date.now()) return blockedUntil;
     // Held back while in flight too, so a re-render cannot send it twice.
     this.#repoTypeSyncBlockedUntil.set(syncKey, Number.POSITIVE_INFINITY);
 
