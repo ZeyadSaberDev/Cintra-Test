@@ -276,7 +276,11 @@ const GoalDetailPage = memo<GoalDetailPageProps>(({ agentId, goalId }) => {
                   {/* Who plans the goal and on which model, next to the control
                       that starts or pauses that planning. */}
                   {goal.agentId && (
-                    <GoalAgentModelConfig disabled={!canEdit || !canStart} goalId={goal.id} />
+                    <GoalAgentModelConfig
+                      disabled={!canEdit || !canStart}
+                      goalId={goal.id}
+                      routeAgentId={agentId}
+                    />
                   )}
                   {goal.status === 'draft' && (
                     <Text fontSize={12} type={'secondary'}>
