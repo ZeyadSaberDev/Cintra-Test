@@ -13,6 +13,7 @@ import {
   clearSWRCache,
   createCacheProvider,
   getScopedCacheKey,
+  LOCAL_PATTERN_LIMITS,
 } from './localStorageProvider';
 
 /** Poll until `fn` returns truthy (for async IndexedDB tier assertions). */
@@ -147,6 +148,34 @@ describe('createCacheProvider — tiering', () => {
       ['recents', { _k: ['recents'], data: [1] }],
     ]);
     expect(await localDataCache.entriesByScope('s1')).toEqual([]);
+  });
+
+  // Regression: every agent row in a long list reads its access record, and the
+  // shared 50-entry local cap let those rows evict recents / model config.
+  it('caps per-resource permission rows separately from the shared local budget', async () => {
+    const scope = { value: 's1' };
+    const { provider } = buildProvider(scope, {
+      localPatternLimits: LOCAL_PATTERN_LIMITS,
+      localPatterns: ['recents', 'resourcePermission:'],
+    });
+    const map = provider();
+
+    for (let i = 0; i < 5; i++) map.set(`recents:${i}`, { data: [i] });
+    const permissionKey = (i: number) =>
+      unstable_serialize(resourcePermissionKeys.generalAccess('agent', `agt_${i}`));
+    for (let i = 0; i < 120; i++) map.set(permissionKey(i), { data: { accessLevel: 'edit' } });
+
+    await until(() => localStorage.getItem(getScopedCacheKey('s1')) !== null);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const keys: string[] = JSON.parse(localStorage.getItem(getScopedCacheKey('s1'))!).map(
+      ([k]: [string]) => k,
+    );
+    expect(keys.filter((k) => k.startsWith('recents'))).toHaveLength(5);
+    const permissionKeys = keys.filter((k) => k.includes('resourcePermission:'));
+    expect(permissionKeys).toHaveLength(LOCAL_PATTERN_LIMITS['resourcePermission:']);
+    expect(permissionKeys).toContain(permissionKey(119));
+    expect(permissionKeys).not.toContain(permissionKey(0));
   });
 
   // Regression: rows written to IndexedDB before the sanitizer existed carry the

@@ -58,6 +58,12 @@ export interface CacheProviderOptions {
    * these scopes closes that leak.
    */
   isEphemeralScope?: (scope: string) => boolean;
+  /**
+   * Local-tier key patterns with their own entry cap, outside the shared
+   * `maxLocalEntries` budget. Use it for per-row records (one entry per
+   * resource) so a long list cannot evict the other first-paint shells.
+   */
+  localPatternLimits?: Record<string, number>;
   /** SWR key patterns persisted to the localStorage tier. */
   localPatterns?: string[];
   /** Max localStorage-tier entries, defaults to 50. */
@@ -155,6 +161,7 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     idbPatterns = [],
     isEphemeralScope,
     localPatterns = [],
+    localPatternLimits = {},
     ttl = 7 * 24 * 60 * 60 * 1000, // 7 days
     maxLocalEntries = 50,
     version = '1.0.0',
@@ -218,23 +225,45 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     }
   };
 
+  /**
+   * Keep the newest entries of each bounded pattern within its own limit and
+   * the rest within `maxLocalEntries`. `scale` shrinks every budget alike.
+   */
+  const capLocalEntries = <T extends readonly [string, unknown]>(entries: T[], scale = 1): T[] => {
+    const groups = new Map<string | null, T[]>();
+    for (const entry of entries) {
+      const group =
+        Object.keys(localPatternLimits).find((pattern) => entry[0].includes(pattern)) ?? null;
+      const list = groups.get(group) ?? [];
+      list.push(entry);
+      groups.set(group, list);
+    }
+    const kept = new Set<T>();
+    for (const [group, list] of groups) {
+      const limit = group === null ? maxLocalEntries : localPatternLimits[group];
+      for (const entry of list.slice(-Math.floor(limit * scale))) kept.add(entry);
+    }
+    return entries.filter((entry) => kept.has(entry));
+  };
+
   const saveLocal = () => {
     if (!cacheMapInstance) return;
     if (!isPersistableScope()) return;
     const key = getScopedCacheKey(getScope());
     try {
-      const entries = Array.from(cacheMapInstance.entries())
+      const persisted = Array.from(cacheMapInstance.entries())
         .filter(([k]) => matchesPattern(k, localPatterns))
         .map(([k, value]) => [k, toPersisted(value)] as const)
-        .filter(([, data]) => data !== undefined)
-        .slice(-maxLocalEntries)
-        .map(([k, data]) => [k, { data, timestamp: Date.now(), version } as CacheEntry]);
+        .filter(([, data]) => data !== undefined);
+      const entries = capLocalEntries(persisted).map(
+        ([k, data]) => [k, { data, timestamp: Date.now(), version } as CacheEntry] as const,
+      );
 
       const serialized = JSON.stringify(entries);
       const sizeInMB = new Blob([serialized]).size / (1024 * 1024);
       if (sizeInMB > 4) {
         // Drop oldest half rather than wiping everything.
-        localStorage.setItem(key, JSON.stringify(entries.slice(-Math.floor(maxLocalEntries / 2))));
+        localStorage.setItem(key, JSON.stringify(capLocalEntries(entries, 0.5)));
         console.warn(`[SWR Cache] localStorage tier too large (${sizeInMB.toFixed(2)}MB), trimmed`);
       } else {
         localStorage.setItem(key, serialized);
@@ -550,6 +579,15 @@ export const CACHE_TIERS = {
 } as const;
 
 /**
+ * Local-tier patterns that hold one row per resource. They get their own cap
+ * so, e.g., scrolling a long agent list (every row reads its access record)
+ * cannot push recents / model config out of the shared 50-entry budget.
+ */
+export const LOCAL_PATTERN_LIMITS: Record<string, number> = {
+  'resourcePermission:': 100,
+};
+
+/**
  * Provider factory for SWRConfig.
  *
  * @param getScope resolver for the current identity scope. Evaluated lazily so
@@ -573,6 +611,7 @@ export const swrCacheProvider = (
     // scope is a legitimate durable context. `reloadScope` clears the dirty set
     // on a real scope flip, so quarantined writes never survive a switch.
     isEphemeralScope: () => !isScopeTrusted(),
+    localPatternLimits: LOCAL_PATTERN_LIMITS,
     localPatterns: [...CACHE_TIERS.local],
     onScopeHydrated,
     // Governs the localStorage tier only (recents-style shells); the IndexedDB
