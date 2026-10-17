@@ -18,6 +18,7 @@ const testState = vi.hoisted(() => ({
   hasActiveWorkspace: true,
   isValidating: false,
   scope: 'user-1:ws-a',
+  scopeTrusted: true,
 }));
 
 vi.mock('@/business/client/hooks/useHasActiveWorkspace', () => ({
@@ -26,6 +27,7 @@ vi.mock('@/business/client/hooks/useHasActiveWorkspace', () => ({
 
 vi.mock('@/libs/swr/useCacheScope', () => ({
   getCacheScope: () => testState.scope,
+  useIsScopeTrusted: () => testState.scopeTrusted,
 }));
 
 vi.mock('@/services/resourcePermission', () => ({
@@ -71,6 +73,7 @@ describe('useResourceAccess', () => {
     testState.hasActiveWorkspace = true;
     testState.isValidating = false;
     testState.scope = 'user-1:ws-a';
+    testState.scopeTrusted = true;
   });
 
   it('resolves from cached access while it revalidates, but does not confirm it yet', async () => {
@@ -321,5 +324,20 @@ describe('useResourceAccess', () => {
     rerender();
     expect(result.current.confirmedAt).toBe(1000);
     vi.restoreAllMocks();
+  });
+
+  // Security: before the identity resolves, the cache partition is the
+  // last-known user's, so a cold boot with an expired session or an
+  // out-of-band account switch must not act on that account's cached record.
+  it('does not resolve a cached record until the cache scope is trusted', () => {
+    testState.scopeTrusted = false;
+    testState.data = record({ accessLevel: 'edit' });
+
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+    expect(result.current.isAccessResolved).toBe(false);
+
+    testState.scopeTrusted = true;
+    rerender();
+    expect(result.current.isAccessResolved).toBe(true);
   });
 });

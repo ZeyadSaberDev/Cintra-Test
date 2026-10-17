@@ -270,4 +270,35 @@ describe('ResourceConfigAccessGate', () => {
     expect(getByText('Profile loading')).toBeInTheDocument();
     expect(queryByText('Access error')).not.toBeInTheDocument();
   });
+
+  // Regression: router reuses the gate across `/agent/A/profile` →
+  // `/agent/B/profile`, so a denial of B confirmed after A opened (but before
+  // B did) passed the freshness check and redirected before B's re-check.
+  it('requires a fresh check per resource when the gate is reused', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    mocks.canEditResource = true;
+    const gate = (resourceId: string) => (
+      <ResourceConfigAccessGate
+        loading={<div>Profile loading</div>}
+        redirectPath="/agent/agent-1"
+        resourceId={resourceId}
+        resourceType="agent"
+      >
+        <div>Agent config</div>
+      </ResourceConfigAccessGate>
+    );
+    const { getByText, rerender } = render(gate('agent-a'));
+    expect(getByText('Agent config')).toBeInTheDocument();
+
+    // B's view-only record was confirmed at 1500, after A opened at 1000.
+    now.mockReturnValue(2000);
+    mocks.canEditResource = false;
+    mocks.confirmedAt = 1500;
+    rerender(gate('agent-b'));
+
+    expect(getByText('Profile loading')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.retryAccess).toHaveBeenCalledTimes(1));
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    now.mockRestore();
+  });
 });

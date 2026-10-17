@@ -1,7 +1,7 @@
 import { useHasActiveWorkspace } from '@/business/client/hooks/useHasActiveWorkspace';
 import { useClientDataSWR } from '@/libs/swr';
 import { resourcePermissionKeys } from '@/libs/swr/keys';
-import { getCacheScope } from '@/libs/swr/useCacheScope';
+import { getCacheScope, useIsScopeTrusted } from '@/libs/swr/useCacheScope';
 import type { PermissionResourceType } from '@/services/resourcePermission';
 import { resourcePermissionService } from '@/services/resourcePermission';
 import { isTrpcErrorCode } from '@/utils/trpcError';
@@ -107,6 +107,7 @@ export const useResourceAccess = (
   resourceId: string | undefined,
 ) => {
   const hasActiveWorkspace = useHasActiveWorkspace();
+  const isScopeTrusted = useIsScopeTrusted();
   const enabled = hasActiveWorkspace && !!resourceId;
 
   // `isValidating` is read (and returned) so the hook re-renders when a
@@ -136,7 +137,10 @@ export const useResourceAccess = (
       !enabled || (!isDenied && (!data ? true : data.canManage || data.accessLevel !== 'view')),
     confirmedAt: isAccessConfirmed && enabled ? confirmedThisSession.get(key) : undefined,
     isAccessConfirmed,
-    isAccessResolved: !enabled || isDenied || !!data,
+    // Before the identity resolves, the cache partition is the last-known
+    // user's guess: a cold boot with an expired session or an out-of-band
+    // account switch would otherwise act on another account's cached record.
+    isAccessResolved: !enabled || isDenied || (!!data && isScopeTrusted),
     isLoading,
     isValidating,
     retryAccess: mutate,

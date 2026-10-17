@@ -24,12 +24,17 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
   ({ children, loading, redirectPath, requiredAccess = 'edit', resourceId, resourceType }) => {
     const { t } = useTranslation('chat');
     const navigate = useWorkspaceAwareNavigate();
-    const hasRedirected = useRef(false);
-    const hasRequestedCheck = useRef(false);
-    // Only a check issued after this gate mounted may justify a redirect: a
-    // denial confirmed earlier in the session (e.g. by a sidebar row) can
-    // predate a grant made since.
-    const [mountedAt] = useState(() => Date.now());
+    // Router reuses this gate across resources (`/agent/A/profile` →
+    // `/agent/B/profile`), so the lifecycle below is per resource, not per mount.
+    const resourceKey = `${resourceType}:${resourceId}`;
+    const hasRedirected = useRef<string | null>(null);
+    const hasRequestedCheck = useRef<string | null>(null);
+    // Only a check issued after this gate opened the resource may justify a
+    // redirect: a denial confirmed earlier in the session (e.g. by a sidebar
+    // row) can predate a grant made since.
+    const [opened, setOpened] = useState(() => ({ at: Date.now(), key: resourceKey }));
+    if (opened.key !== resourceKey) setOpened({ at: Date.now(), key: resourceKey });
+    const mountedAt = opened.key === resourceKey ? opened.at : Number.POSITIVE_INFINITY;
     const { allowed: canEditContent } = usePermission('edit_own_content');
     const {
       accessError,
@@ -60,15 +65,15 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
     // denial, which would leave the gate waiting; request the check once.
     useEffect(() => {
       if (!isBlocked || isFreshlyConfirmed || isValidating || accessError) return;
-      if (hasRequestedCheck.current) return;
-      hasRequestedCheck.current = true;
+      if (hasRequestedCheck.current === resourceKey) return;
+      hasRequestedCheck.current = resourceKey;
       void retryAccess();
-    }, [accessError, isBlocked, isFreshlyConfirmed, isValidating, retryAccess]);
+    }, [accessError, isBlocked, isFreshlyConfirmed, isValidating, resourceKey, retryAccess]);
 
     useEffect(() => {
-      if (!denialConfirmed || accessError || hasRedirected.current) return;
+      if (!denialConfirmed || accessError || hasRedirected.current === resourceKey) return;
 
-      hasRedirected.current = true;
+      hasRedirected.current = resourceKey;
       // Name the actual reason: a workspace role that cannot configure Agents at
       // all reads very differently from holding use-only access on this one
       // resource, and conflating them made authors think their own Agent had
@@ -97,6 +102,7 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
       navigate,
       redirectPath,
       requiredAccess,
+      resourceKey,
       resourceType,
       t,
     ]);
