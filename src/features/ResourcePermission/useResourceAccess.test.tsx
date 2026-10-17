@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResourceGeneralAccess } from '@/services/resourcePermission';
 
-import { resetConfirmedAccessForTest, useResourceAccess } from './useResourceAccess';
+import {
+  AccessScopeChangedError,
+  fetchGeneralAccess,
+  resetConfirmedAccessForTest,
+  useResourceAccess,
+} from './useResourceAccess';
 
 const testState = vi.hoisted(() => ({
   data: undefined as ResourceGeneralAccess | undefined,
@@ -164,5 +169,27 @@ describe('useResourceAccess', () => {
     await revalidate(record({ canManage: true }));
     rerender();
     expect(result.current.canManageResource).toBe(true);
+  });
+
+  // Regression: the SWR key has no user id, so a request issued before an
+  // in-place account switch that settled after it returned the previous
+  // user's record into the new user's partition, where it was persisted.
+  it('rejects an access record that settles after the cache scope changed', async () => {
+    let settle!: (value: ResourceGeneralAccess) => void;
+    testState.getGeneralAccess.mockReturnValueOnce(
+      new Promise<ResourceGeneralAccess>((resolve) => {
+        settle = resolve;
+      }),
+    );
+
+    const pending = fetchGeneralAccess('agent', 'agent-1');
+    testState.scope = 'user-2:ws-a';
+    settle(record({ canManage: true }));
+
+    await expect(pending).rejects.toBeInstanceOf(AccessScopeChangedError);
+
+    testState.data = record({ canManage: true });
+    const { result } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+    expect(result.current).toMatchObject({ canManageResource: false, isAccessConfirmed: false });
   });
 });

@@ -19,6 +19,14 @@ const confirmedThisSession = new Set<string>();
 const sessionKey = (scope: string, resourceType: PermissionResourceType, resourceId: string) =>
   `${scope}|${resourceType}:${resourceId}`;
 
+/** Thrown when the cache scope changed while an access request was in flight. */
+export class AccessScopeChangedError extends Error {
+  constructor() {
+    super('Cache scope changed before the access record settled');
+    this.name = 'AccessScopeChangedError';
+  }
+}
+
 /** Fetch the General-access record and remember that this session confirmed it. */
 export const fetchGeneralAccess = async (
   resourceType: PermissionResourceType,
@@ -28,6 +36,10 @@ export const fetchGeneralAccess = async (
   // it settles.
   const scope = getCacheScope();
   const result = await resourcePermissionService.getGeneralAccess(resourceType, resourceId);
+  // The SWR key carries no user id, so after an in-place account switch the
+  // previous user's answer would land in (and persist to) the new user's
+  // partition. Reject it; the scope reload revalidates under the new identity.
+  if (getCacheScope() !== scope) throw new AccessScopeChangedError();
   confirmedThisSession.add(sessionKey(scope, resourceType, resourceId));
   return result;
 };
