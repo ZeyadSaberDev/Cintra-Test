@@ -73,17 +73,17 @@ const WorkingDirectorySectionInner = memo<WorkingDirectorySectionProps>(({ agent
     getWorkingDirEffectivePath(topicWorkingDirectoryConfig) === effectiveWorkingDirectory;
   const persistedConfig = topicConfigMatchesEffective ? topicWorkingDirectoryConfig : undefined;
 
-  // Local machine probes the filesystem for repoType; a remote device's repoType
-  // comes from the cached `workingDirs` entry (we can't probe a remote fs here).
-  const localRepoType = useRepoType(isLocalDevice ? effectiveWorkingDirectory : undefined);
+  // Cached repoType of the target device's dir, re-probed in the background —
+  // over IPC locally, through the device's RPC remotely — so a dir that became
+  // a repo after it was registered (cloned into later) is corrected.
+  const liveRepoType = useRepoType(
+    targetDeviceId ? effectiveWorkingDirectory : undefined,
+    targetDeviceId,
+  );
   const deviceDirs = useDeviceStore(deviceSelectors.getDeviceWorkingDirs(targetDeviceId));
   const currentEntry = effectiveWorkingDirectory
     ? deviceDirs.find((entry) => getEntryEffectivePath(entry) === effectiveWorkingDirectory)
     : undefined;
-  const remoteRepoType =
-    currentEntry?.repoType === 'git' || currentEntry?.repoType === 'github'
-      ? currentEntry.repoType
-      : undefined;
 
   // The SOURCE repo, not the checkout. A persisted-worktree topic has no matching
   // `workingDirs` entry (that's exactly why the repoType probe misses), so without
@@ -95,8 +95,7 @@ const WorkingDirectorySectionInner = memo<WorkingDirectorySectionProps>(({ agent
     getWorkingDirectoryPathString(persistedConfig?.path) ??
     effectiveWorkingDirectory;
 
-  const repoType =
-    (isLocalDevice ? localRepoType : remoteRepoType) ?? getConfigRepoType(persistedConfig);
+  const repoType = liveRepoType ?? getConfigRepoType(persistedConfig);
 
   return (
     <>

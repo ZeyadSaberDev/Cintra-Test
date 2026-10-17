@@ -1,4 +1,4 @@
-import type { DeviceListItem, WorkingDirEntry } from '@lobechat/types';
+import type { DeviceListItem, WorkingDirEntry, WorkingDirRepoType } from '@lobechat/types';
 import { type SWRResponse } from 'swr';
 
 import { refreshDeviceList } from '@/features/DeviceManager/const';
@@ -7,7 +7,12 @@ import { deviceKeys } from '@/libs/swr/keys';
 import { deviceService } from '@/services/device';
 import { type StoreSetter } from '@/store/types';
 
-import { nextWorkingDirs, removeWorkingDir, WORKING_DIRS_MAX } from './deviceCwd';
+import {
+  nextWorkingDirs,
+  removeWorkingDir,
+  setWorkingDirRepoType,
+  WORKING_DIRS_MAX,
+} from './deviceCwd';
 import { type DeviceStore } from './store';
 
 type Setter = StoreSetter<DeviceStore>;
@@ -37,6 +42,8 @@ export const deviceSlice = (set: Setter, get: () => DeviceStore, _api?: unknown)
 export class DeviceActionImpl {
   readonly #get: () => DeviceStore;
   readonly #set: Setter;
+  /** `syncWorkingDirRepoType` targets already sent this session. */
+  readonly #repoTypeSyncs = new Set<string>();
 
   constructor(set: Setter, get: () => DeviceStore, _api?: unknown) {
     void _api;
@@ -191,6 +198,47 @@ export class DeviceActionImpl {
     try {
       await (device.scope === 'workspace'
         ? deviceService.removeWorkspaceDeviceWorkingDir({ deviceId, path })
+        : deviceService.updateDevice({ deviceId, workingDirs: updated }));
+    } finally {
+      await revalidateDeviceLists();
+    }
+  };
+
+  /**
+   * Correct a device working dir's cached `repoType` in place after a live probe
+   * disagreed with it — e.g. a folder registered while still empty and cloned
+   * into afterwards. Neither reorders nor adds entries; a no-op when nothing
+   * changes. Each target value is sent at most once per session, so a rejected
+   * write (a viewer cannot edit a shared device) does not loop with the
+   * revalidation that restores the stale value.
+   */
+  syncWorkingDirRepoType = async (
+    deviceId: string,
+    path: string,
+    repoType: WorkingDirRepoType | undefined,
+  ): Promise<void> => {
+    const device = this.#get().devices.find((d) => d.deviceId === deviceId);
+    if (!device) return;
+    const updated = setWorkingDirRepoType(device.workingDirs ?? [], path, repoType);
+    if (!updated) return;
+
+    const syncKey = JSON.stringify([deviceId, path, repoType ?? null]);
+    if (this.#repoTypeSyncs.has(syncKey)) return;
+    this.#repoTypeSyncs.add(syncKey);
+
+    this.#set(
+      {
+        devices: this.#get().devices.map((d) =>
+          d.deviceId === deviceId ? { ...d, workingDirs: updated } : d,
+        ) as DeviceListItem[],
+      },
+      false,
+      'syncWorkingDirRepoType',
+    );
+
+    try {
+      await (device.scope === 'workspace'
+        ? deviceService.setWorkspaceDeviceWorkingDirRepoType({ deviceId, path, repoType })
         : deviceService.updateDevice({ deviceId, workingDirs: updated }));
     } finally {
       await revalidateDeviceLists();

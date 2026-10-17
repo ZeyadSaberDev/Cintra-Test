@@ -42,6 +42,9 @@ describe('DeviceAction', () => {
     vi.spyOn(deviceService, 'removeWorkspaceDeviceWorkingDir').mockResolvedValue({
       success: true,
     });
+    vi.spyOn(deviceService, 'setWorkspaceDeviceWorkingDirRepoType').mockResolvedValue({
+      success: true,
+    });
     useDeviceStore.setState({ devices: [], isDevicesInit: true });
   });
 
@@ -185,6 +188,83 @@ describe('DeviceAction', () => {
         workingDirs: [],
       });
       expect(deviceService.updateWorkspaceDevice).not.toHaveBeenCalled();
+    });
+  });
+
+  // The device store is a singleton and remembers which corrections it already
+  // sent, so each case below uses its own path.
+  describe('syncWorkingDirRepoType', () => {
+    it('corrects a workspace device entry in place through the entry mutation', async () => {
+      useDeviceStore.setState({
+        devices: [
+          buildDevice({
+            deviceId: 'ws-dev',
+            scope: 'workspace',
+            workingDirs: [{ path: '/other' }, { path: '/cloned-later' }],
+          }),
+        ],
+      });
+
+      await useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/cloned-later', 'github');
+
+      expect(deviceService.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledWith({
+        deviceId: 'ws-dev',
+        path: '/cloned-later',
+        repoType: 'github',
+      });
+      expect(deviceService.updateDevice).not.toHaveBeenCalled();
+      expect(deviceSelectors.getDeviceWorkingDirs('ws-dev')(useDeviceStore.getState())).toEqual([
+        { path: '/other' },
+        { path: '/cloned-later', repoType: 'github' },
+      ]);
+      expect(mutate).toHaveBeenCalledWith(deviceKeys.listDevices());
+    });
+
+    it('writes the patched list for a personal device', async () => {
+      useDeviceStore.setState({
+        devices: [buildDevice({ workingDirs: [{ path: '/personal' }, { path: '/b' }] })],
+      });
+
+      await useDeviceStore.getState().syncWorkingDirRepoType('dev-1', '/personal', 'git');
+
+      expect(deviceService.updateDevice).toHaveBeenCalledWith({
+        deviceId: 'dev-1',
+        workingDirs: [{ path: '/personal', repoType: 'git' }, { path: '/b' }],
+      });
+    });
+
+    it('does nothing when the entry already matches or is not in the list', async () => {
+      useDeviceStore.setState({
+        devices: [buildDevice({ workingDirs: [{ path: '/same', repoType: 'git' }] })],
+      });
+
+      await useDeviceStore.getState().syncWorkingDirRepoType('dev-1', '/same', 'git');
+      await useDeviceStore.getState().syncWorkingDirRepoType('dev-1', '/not-listed', 'git');
+
+      expect(deviceService.updateDevice).not.toHaveBeenCalled();
+      expect(mutate).not.toHaveBeenCalled();
+    });
+
+    // A viewer cannot edit a shared device: the revalidation restores the stale
+    // value, which must not trigger the same rejected write again.
+    it('sends a rejected correction only once per session', async () => {
+      const device = buildDevice({
+        deviceId: 'ws-dev',
+        scope: 'workspace',
+        workingDirs: [{ path: '/forbidden' }],
+      });
+      useDeviceStore.setState({ devices: [device] });
+      vi.mocked(deviceService.setWorkspaceDeviceWorkingDirRepoType).mockRejectedValueOnce(
+        new Error('FORBIDDEN'),
+      );
+
+      await expect(
+        useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/forbidden', 'github'),
+      ).rejects.toThrow('FORBIDDEN');
+      useDeviceStore.setState({ devices: [device] });
+      await useDeviceStore.getState().syncWorkingDirRepoType('ws-dev', '/forbidden', 'github');
+
+      expect(deviceService.setWorkspaceDeviceWorkingDirRepoType).toHaveBeenCalledTimes(1);
     });
   });
 });
