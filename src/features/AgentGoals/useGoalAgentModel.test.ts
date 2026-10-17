@@ -14,7 +14,10 @@ const mocks = vi.hoisted(() => ({
     taskModel?: string;
     taskProvider?: string;
   },
+  loadedAgents: new Set(['agt_old', 'agt_exec']),
+  lockedAgents: new Set<string>(),
   navigate: vi.fn(),
+  preferenceLoading: false,
   setGoalAgent: vi.fn(),
   setGoalModel: vi.fn(),
   setGoalTaskAgent: vi.fn(),
@@ -35,14 +38,22 @@ vi.mock('@/store/goal', () => ({
 }));
 
 vi.mock('@/store/agent', () => ({
-  useAgentStore: (selector: (s: any) => unknown) => selector({ useHydrateAgentConfig: () => {} }),
+  useAgentStore: (selector: (s: any) => unknown) =>
+    selector({
+      agentMap: Object.fromEntries([...mocks.loadedAgents].map((id) => [id, {}])),
+      useHydrateAgentConfig: () => {},
+    }),
 }));
 
-vi.mock('@/store/agent/selectors', () => ({
-  agentByIdSelectors: {
-    getAgentModelById: (id: string) => () => (id === 'agt_exec' ? 'deepseek-chat' : 'gpt-4o-mini'),
-    getAgentModelProviderById: (id: string) => () => (id === 'agt_exec' ? 'deepseek' : 'openai'),
-  },
+// The caller's effective model for an agent, as the chat model trigger reads it.
+vi.mock('@/features/ChatInput/hooks/useAgentModelSelection', () => ({
+  useAgentModelSelection: (id: string) => ({
+    isPreferenceLoading: mocks.preferenceLoading,
+    model: id === 'agt_exec' ? 'deepseek-chat' : 'gpt-4o-mini',
+    provider: id === 'agt_exec' ? 'deepseek' : 'openai',
+    selectionPolicy: mocks.lockedAgents.has(id) ? 'fixed' : 'member',
+    usesWorkspaceMemberSelection: mocks.lockedAgents.has(id),
+  }),
 }));
 
 vi.mock('@/store/home', () => ({ useHomeStore: (selector: (s: any) => unknown) => selector({}) }));
@@ -58,6 +69,9 @@ vi.mock('@/features/Workspace/useWorkspaceAwareNavigate', () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.config = {};
+  mocks.loadedAgents = new Set(['agt_old', 'agt_exec']);
+  mocks.lockedAgents = new Set();
+  mocks.preferenceLoading = false;
 });
 
 describe('useGoalAgentModel', () => {
@@ -165,5 +179,27 @@ describe('useGoalAgentModel', () => {
       result.current.executor.changeModel({ model: 'deepseek-chat', provider: 'deepseek' }),
     );
     expect(mocks.setGoalTaskModel).toHaveBeenLastCalledWith('goal_1', null);
+  });
+
+  it("does not store a pick before the agent's own model has loaded", async () => {
+    mocks.loadedAgents = new Set();
+    const { result } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+    expect(result.current.planner.modelReady).toBe(false);
+
+    await act(() =>
+      result.current.planner.changeModel({ model: 'gpt-4o-mini', provider: 'openai' }),
+    );
+    expect(mocks.setGoalModel).not.toHaveBeenCalled();
+  });
+
+  it('locks the model of an Agent whose author fixed it', async () => {
+    mocks.lockedAgents = new Set(['agt_old']);
+    const { result } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+    expect(result.current.planner.modelLocked).toBe(true);
+
+    await act(() =>
+      result.current.planner.changeModel({ model: 'gemini-3.8-flash', provider: 'google' }),
+    );
+    expect(mocks.setGoalModel).not.toHaveBeenCalled();
   });
 });

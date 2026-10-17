@@ -1,13 +1,17 @@
 import type { GoalItem } from '@lobechat/types';
+import { resolveAgentModelSelectionPolicy } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
+import { eq } from 'drizzle-orm';
 
 import { AgentModel } from '@/database/models/agent';
 import { GoalModel } from '@/database/models/goal';
 import { GoalGraphModel } from '@/database/models/goalGraph';
 import { TaskModel } from '@/database/models/task';
+import { agents } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { assertAgentUsableBy } from '@/database/utils/agent-access';
 
+import { isResourceAuthorOrAdmin } from '../resourcePermission';
 import { resolveMissingTaskModelConfig } from '../task/modelSnapshot';
 import { GoalManagerService } from './manager';
 
@@ -96,6 +100,11 @@ export class GoalAssignmentService {
    * — and a turn already running keeps the model it started on.
    */
   setModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> => {
+    if (modelConfig) {
+      const current = await this.goalModel.findById(goalId);
+      if (!current) throw goalNotFound();
+      if (current.agentId) await this.assertModelSelectable(current.agentId);
+    }
     const goal = await this.goalModel.updateModelConfig(goalId, modelConfig);
     if (!goal) throw goalNotFound();
     return goal;
@@ -107,6 +116,12 @@ export class GoalAssignmentService {
    * it, and unfinished ones switch with it; a run already going keeps its model.
    */
   setTaskModel = async (goalId: string, modelConfig: ModelConfig | null): Promise<GoalItem> => {
+    if (modelConfig) {
+      const current = await this.goalModel.findById(goalId);
+      if (!current) throw goalNotFound();
+      const executor = await this.resolveTaskAssignee(current);
+      if (executor) await this.assertModelSelectable(executor);
+    }
     const goal = await this.goalModel.updateModelConfig(goalId, modelConfig, 'task');
     if (!goal) throw goalNotFound();
     const executor = await this.resolveTaskAssignee(goal);
@@ -133,6 +148,40 @@ export class GoalAssignmentService {
         current = (await this.goalModel.updateModelConfig(goal.id, null, slot)) ?? current;
     }
     return current;
+  };
+
+  /**
+   * A goal override is an explicit per-run model, which outranks an Agent's
+   * policy at run time. So when the author pinned the model of a public
+   * Workspace Agent (`fixed`), only they or a Workspace admin may override it
+   * here — the same people who could change it on the Agent itself.
+   */
+  private assertModelSelectable = async (agentId: string) => {
+    const agent = await this.db.query.agents.findFirst({
+      columns: { agencyConfig: true, userId: true, visibility: true, workspaceId: true },
+      where: eq(agents.id, agentId),
+    });
+    if (!agent || agent.userId === this.userId) return;
+    const workspaceId = agent.workspaceId ?? undefined;
+    const visibility = (agent.visibility as 'private' | 'public' | null) ?? 'public';
+    const policy = resolveAgentModelSelectionPolicy({
+      agencyConfig: agent.agencyConfig ?? undefined,
+      visibility,
+      workspaceId,
+    });
+    if (policy !== 'fixed' || !workspaceId || visibility === 'private') return;
+    const canManage = await isResourceAuthorOrAdmin({
+      db: this.db,
+      meta: { userId: agent.userId, visibility, workspaceId },
+      resourceType: 'agent',
+      userId: this.userId,
+      workspaceId,
+    });
+    if (!canManage)
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: "This Agent's author fixed its model; only they or an admin can override it",
+      });
   };
 
   /** The model a Task assigned to this agent would be created with. */

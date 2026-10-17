@@ -1,8 +1,8 @@
 import { toast } from '@lobehub/ui';
 
+import { useAgentModelSelection } from '@/features/ChatInput/hooks/useAgentModelSelection';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAgentStore } from '@/store/agent';
-import { agentByIdSelectors } from '@/store/agent/selectors';
 import { goalSelectors, useGoalStore } from '@/store/goal';
 import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
@@ -21,7 +21,8 @@ interface UseGoalAgentModelParams {
 }
 
 /**
- * An agent's own model and runtime, which a goal slot shows until the goal
+ * The model an agent runs on for the current caller — including a Workspace
+ * member's own pick on a shared Agent — which a goal slot shows until the goal
  * overrides it. Hydrates the agent's config, since the surrounding page may be
  * about another agent.
  */
@@ -29,14 +30,22 @@ const useAgentOwnModel = (agentId?: string) => {
   const isLogin = useUserStore(authSelectors.isLogin);
   const useHydrateAgentConfig = useAgentStore((s) => s.useHydrateAgentConfig);
   useHydrateAgentConfig(isLogin, agentId ?? '');
-  const model = useAgentStore((s) => agentByIdSelectors.getAgentModelById(agentId ?? '')(s));
-  const provider = useAgentStore((s) =>
-    agentByIdSelectors.getAgentModelProviderById(agentId ?? '')(s),
-  );
+  const loaded = useAgentStore((s) => !!agentId && !!s.agentMap[agentId]);
+  const selection = useAgentModelSelection(agentId ?? '');
   const heterogeneousType = useHomeStore(
     (s) => homeAgentListSelectors.getAgentById(agentId ?? '')(s)?.heterogeneousType,
   );
-  return { heterogeneousType, model, provider };
+  return {
+    heterogeneousType,
+    // The author pinned this shared Agent's model, so only they or an admin
+    // may override it — the server refuses everyone else.
+    locked: selection.usesWorkspaceMemberSelection && selection.selectionPolicy === 'fixed',
+    model: selection.model,
+    provider: selection.provider,
+    // Until the agent and the caller's preference load, the fallback is a
+    // repository default, and a pick compared against it would be misread.
+    ready: loaded && !selection.isPreferenceLoading,
+  };
 };
 
 /**
@@ -96,8 +105,13 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
       agentId: taskAgentId,
       changeAgent: changeTaskAgent,
       changeModel: (next: ModelConfig) =>
-        run(() => setGoalTaskModel(goalId, overrideOf(next, executor))),
+        run(async () => {
+          if (!executor.ready || executor.locked) return;
+          await setGoalTaskModel(goalId, overrideOf(next, executor));
+        }),
       heterogeneousType: executor.heterogeneousType,
+      modelLocked: executor.locked,
+      modelReady: executor.ready,
       model: {
         model: taskModel || executor.model || '',
         provider: taskProvider || executor.provider || '',
@@ -107,8 +121,13 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
       agentId,
       changeAgent,
       changeModel: (next: ModelConfig) =>
-        run(() => setGoalModel(goalId, overrideOf(next, planner))),
+        run(async () => {
+          if (!planner.ready || planner.locked) return;
+          await setGoalModel(goalId, overrideOf(next, planner));
+        }),
       heterogeneousType: planner.heterogeneousType,
+      modelLocked: planner.locked,
+      modelReady: planner.ready,
       model: {
         model: planningModel || planner.model || '',
         provider: planningProvider || planner.provider || '',

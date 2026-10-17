@@ -4,7 +4,18 @@ import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
 import { resolveSystemAgentModelConfig } from '@/server/services/systemAgent/modelConfig';
 
-export const resolveGoalModelConfig = async (db: LobeChatDatabase, userId: string) => {
+/**
+ * The model the goal's own planning runs on: the goal's planning-model pick
+ * when it has one, otherwise the user's system goal model. Callers that plan
+ * for no particular goal (or diagnose rather than plan) omit `goalConfig`.
+ */
+export const resolveGoalModelConfig = async (
+  db: LobeChatDatabase,
+  userId: string,
+  goalConfig?: GoalConfig | null,
+) => {
+  if (goalConfig?.model && goalConfig.provider)
+    return { model: goalConfig.model, provider: goalConfig.provider };
   const settings = await new UserModel(db, userId).getUserSettings();
   const systemAgent = settings?.systemAgent as Partial<UserSystemAgentConfig> | undefined;
 
