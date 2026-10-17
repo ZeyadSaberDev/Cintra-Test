@@ -11,10 +11,15 @@ const testState = vi.hoisted(() => ({
   getGeneralAccess: vi.fn(),
   hasActiveWorkspace: true,
   isValidating: false,
+  scope: 'user-1:ws-a',
 }));
 
 vi.mock('@/business/client/hooks/useHasActiveWorkspace', () => ({
   useHasActiveWorkspace: () => testState.hasActiveWorkspace,
+}));
+
+vi.mock('@/libs/swr/useCacheScope', () => ({
+  getCacheScope: () => testState.scope,
 }));
 
 vi.mock('@/services/resourcePermission', () => ({
@@ -58,6 +63,7 @@ describe('useResourceAccess', () => {
     testState.getGeneralAccess.mockReset();
     testState.hasActiveWorkspace = true;
     testState.isValidating = false;
+    testState.scope = 'user-1:ws-a';
   });
 
   it('resolves from cached access while it revalidates, but does not confirm it yet', async () => {
@@ -136,5 +142,27 @@ describe('useResourceAccess', () => {
       canManageResource: false,
       canUseResource: false,
     });
+  });
+
+  // Regression: confirmations were keyed by resource id only, so after an
+  // in-place user/workspace switch another scope's stale cached manager grant
+  // for the same id counted as confirmed and showed management controls.
+  it('does not carry a confirmation across a cache-scope switch', async () => {
+    testState.data = record({ canManage: true });
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    await revalidate(record({ canManage: true }));
+    rerender();
+    expect(result.current.canManageResource).toBe(true);
+
+    testState.scope = 'user-2:ws-b';
+    testState.isValidating = true;
+    rerender();
+
+    expect(result.current).toMatchObject({ canManageResource: false, isAccessConfirmed: false });
+
+    await revalidate(record({ canManage: true }));
+    rerender();
+    expect(result.current.canManageResource).toBe(true);
   });
 });
