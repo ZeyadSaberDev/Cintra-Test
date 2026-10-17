@@ -14,6 +14,7 @@ import {
   createCacheProvider,
   getScopedCacheKey,
   LOCAL_PATTERN_LIMITS,
+  LOCAL_SNAPSHOT_PATTERNS,
 } from './localStorageProvider';
 
 /** Poll until `fn` returns truthy (for async IndexedDB tier assertions). */
@@ -176,6 +177,75 @@ describe('createCacheProvider — tiering', () => {
     expect(permissionKeys).toHaveLength(LOCAL_PATTERN_LIMITS['resourcePermission:']);
     expect(permissionKeys).toContain(permissionKey(119));
     expect(permissionKeys).not.toContain(permissionKey(0));
+  });
+
+  // Regression: every save stamped every retained row with `Date.now()`, so
+  // unrelated writes kept renewing an access record that was never re-fetched
+  // and a revoked grant could outlive the 7-day TTL indefinitely.
+  it('ages access records from their own fetch time, not from unrelated saves', async () => {
+    const scope = { value: 's1' };
+    const { provider } = buildProvider(scope, {
+      localPatterns: ['recents', 'resourcePermission:'],
+      localSnapshotPatterns: LOCAL_SNAPSHOT_PATTERNS,
+    });
+    const map = provider();
+    const fetched = unstable_serialize(resourcePermissionKeys.generalAccess('agent', 'agt_1'));
+    const legacy = unstable_serialize(resourcePermissionKeys.generalAccess('agent', 'agt_2'));
+    map.set(fetched, { data: { accessLevel: 'edit', fetchedAt: 1000 } });
+    map.set(legacy, { data: { accessLevel: 'edit' } });
+    map.set('recents', { data: [1] });
+
+    const timestamps = () =>
+      new Map<string, number>(
+        JSON.parse(localStorage.getItem(getScopedCacheKey('s1')) ?? '[]').map(
+          ([k, e]: [string, { timestamp: number }]) => [k, e.timestamp],
+        ),
+      );
+    await until(() => timestamps().has('recents'));
+    // An unrelated write must not renew the access rows.
+    map.set('recents', { data: [2] });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(timestamps().get(fetched)).toBe(1000);
+    expect(timestamps().get(legacy)).toBe(0);
+    expect(timestamps().get('recents')).toBeGreaterThan(1000);
+
+    // …so they expire on the next boot rather than being restored.
+    const reloaded = buildProvider(scope, {
+      localPatterns: ['recents', 'resourcePermission:'],
+      localSnapshotPatterns: LOCAL_SNAPSHOT_PATTERNS,
+    }).provider();
+    expect(reloaded.get(fetched)).toBeUndefined();
+    expect(reloaded.get('recents')).toEqual({ data: [2] });
+  });
+
+  // Regression: another tab's stale snapshot (e.g. `canManage: true`) replaced
+  // a record this tab had already re-confirmed, re-exposing manage controls.
+  it('does not adopt access records from another tab', () => {
+    const scope = { value: 's1' };
+    const { provider } = buildProvider(scope, {
+      localPatterns: ['recents', 'resourcePermission:'],
+      localSnapshotPatterns: LOCAL_SNAPSHOT_PATTERNS,
+    });
+    const map = provider();
+    const key = unstable_serialize(resourcePermissionKeys.generalAccess('agent', 'agt_1'));
+    map.set(key, { data: { canManage: false, fetchedAt: Date.now() } });
+
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: getScopedCacheKey('s1'),
+        newValue: JSON.stringify([
+          [
+            key,
+            { data: { data: { canManage: true, fetchedAt: 1 } }, timestamp: 1, version: '1.0.0' },
+          ],
+          ['recents', { data: { data: [9] }, timestamp: Date.now(), version: '1.0.0' }],
+        ]),
+      }),
+    );
+
+    expect(map.get(key)).toMatchObject({ data: { canManage: false } });
+    expect(map.get('recents')).toEqual({ data: [9] });
   });
 
   // Regression: rows written to IndexedDB before the sanitizer existed carry the

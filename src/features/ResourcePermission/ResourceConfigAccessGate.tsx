@@ -9,7 +9,7 @@ import SurfaceSkeleton from '@/components/Skeleton/Surface';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
 
-import { useResourceAccess } from './useResourceAccess';
+import { getAccessRequestGeneration, useResourceAccess } from './useResourceAccess';
 
 interface ResourceConfigAccessGateProps {
   children: ReactNode;
@@ -32,15 +32,23 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
     // Only a check issued after this gate opened the resource may justify a
     // redirect: a denial confirmed earlier in the session (e.g. by a sidebar
     // row) can predate a grant made since.
-    const [opened, setOpened] = useState(() => ({ at: Date.now(), key: resourceKey }));
-    if (opened.key !== resourceKey) setOpened({ at: Date.now(), key: resourceKey });
-    const mountedAt = opened.key === resourceKey ? opened.at : Number.POSITIVE_INFINITY;
+    // Compared by request generation, not wall-clock time: two requests can
+    // share a millisecond, but only one issued after opening has a larger one.
+    const [opened, setOpened] = useState(() => ({
+      generation: getAccessRequestGeneration(),
+      key: resourceKey,
+    }));
+    if (opened.key !== resourceKey) {
+      setOpened({ generation: getAccessRequestGeneration(), key: resourceKey });
+    }
+    const openedGeneration =
+      opened.key === resourceKey ? opened.generation : Number.POSITIVE_INFINITY;
     const { allowed: canEditContent } = usePermission('edit_own_content');
     const {
       accessError,
       canEditResource,
       canManageResource,
-      confirmedAt,
+      confirmedGeneration,
       isAccessConfirmed,
       isAccessResolved,
       isValidating,
@@ -58,7 +66,9 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
       (requiredAccess === 'manage' ? canManageResource : canEditResource);
     const isBlocked = accessReady && !canConfigure;
     const isFreshlyConfirmed =
-      isAccessConfirmed && confirmedAt !== undefined && confirmedAt >= mountedAt;
+      isAccessConfirmed &&
+      confirmedGeneration !== undefined &&
+      confirmedGeneration > openedGeneration;
     const denialConfirmed = isBlocked && isFreshlyConfirmed;
 
     // A deduped mount revalidation may never re-check a session-confirmed

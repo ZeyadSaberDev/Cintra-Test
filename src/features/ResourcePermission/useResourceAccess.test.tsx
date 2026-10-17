@@ -6,6 +6,7 @@ import type { ResourceGeneralAccess } from '@/services/resourcePermission';
 import {
   AccessScopeChangedError,
   fetchGeneralAccess,
+  getAccessRequestGeneration,
   resetConfirmedAccessForTest,
   useResourceAccess,
 } from './useResourceAccess';
@@ -314,15 +315,25 @@ describe('useResourceAccess', () => {
     expect(result.current).toMatchObject({ canEditResource: true, canUseResource: true });
   });
 
-  it('reports when the confirming request was issued', async () => {
-    vi.spyOn(Date, 'now').mockReturnValue(1000);
+  it('reports the generation of the confirming request, ordered by issue', async () => {
     testState.data = record({});
     const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
-    expect(result.current.confirmedAt).toBeUndefined();
+    expect(result.current.confirmedGeneration).toBeUndefined();
 
+    const before = getAccessRequestGeneration();
     await revalidate(record({}));
     rerender();
-    expect(result.current.confirmedAt).toBe(1000);
+    expect(result.current.confirmedGeneration).toBe(before + 1);
+    expect(getAccessRequestGeneration()).toBe(before + 1);
+  });
+
+  // The persisted row ages from this stamp (see LOCAL_SNAPSHOT_PATTERNS).
+  it('stamps each fetched record with its fetch time', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(4242);
+    testState.getGeneralAccess.mockResolvedValueOnce(record({}));
+    renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    await expect(testState.fetcher!()).resolves.toMatchObject({ fetchedAt: 4242 });
     vi.restoreAllMocks();
   });
 

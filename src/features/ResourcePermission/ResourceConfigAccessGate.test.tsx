@@ -11,8 +11,9 @@ const mocks = vi.hoisted(() => ({
   canEditContent: true,
   canEditResource: false,
   canManageResource: false,
-  // When the confirming request was issued; Infinity = after the gate mounted.
-  confirmedAt: Number.POSITIVE_INFINITY as number | undefined,
+  // Generation of the confirming request; Infinity = issued after the gate opened.
+  confirmedGeneration: Number.POSITIVE_INFINITY as number | undefined,
+  generation: 0,
   isValidating: false,
   navigate: vi.fn(),
   retryAccess: vi.fn(),
@@ -57,11 +58,12 @@ vi.mock('@/hooks/usePermission', () => ({
   usePermission: () => ({ allowed: mocks.canEditContent }),
 }));
 vi.mock('./useResourceAccess', () => ({
+  getAccessRequestGeneration: () => mocks.generation,
   useResourceAccess: () => ({
     accessError: mocks.accessError,
     canEditResource: mocks.canEditResource,
     canManageResource: mocks.canManageResource,
-    confirmedAt: mocks.confirmedAt,
+    confirmedGeneration: mocks.confirmedGeneration,
     isAccessConfirmed: mocks.accessConfirmed,
     isAccessResolved: mocks.accessResolved,
     isLoading: false,
@@ -96,7 +98,8 @@ describe('ResourceConfigAccessGate', () => {
     mocks.accessConfirmed = true;
     mocks.accessError = undefined;
     mocks.accessResolved = true;
-    mocks.confirmedAt = Number.POSITIVE_INFINITY;
+    mocks.confirmedGeneration = Number.POSITIVE_INFINITY;
+    mocks.generation = 0;
     mocks.isValidating = false;
   });
 
@@ -232,7 +235,7 @@ describe('ResourceConfigAccessGate', () => {
   // stayed confirmed, so after a same-session grant the gate redirected before
   // its own re-check could return the new access.
   it('does not redirect on a denial confirmed before the gate mounted', async () => {
-    mocks.confirmedAt = 0;
+    mocks.confirmedGeneration = 0;
 
     const { getByText, rerender } = renderGate('agent', <div>Profile loading</div>);
 
@@ -241,7 +244,7 @@ describe('ResourceConfigAccessGate', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
 
     // The re-check returns the new grant.
-    mocks.confirmedAt = Number.POSITIVE_INFINITY;
+    mocks.confirmedGeneration = Number.POSITIVE_INFINITY;
     mocks.canEditResource = true;
     rerender(
       <ResourceConfigAccessGate
@@ -275,7 +278,7 @@ describe('ResourceConfigAccessGate', () => {
   // `/agent/B/profile`, so a denial of B confirmed after A opened (but before
   // B did) passed the freshness check and redirected before B's re-check.
   it('requires a fresh check per resource when the gate is reused', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    mocks.generation = 1;
     mocks.canEditResource = true;
     const gate = (resourceId: string) => (
       <ResourceConfigAccessGate
@@ -290,15 +293,29 @@ describe('ResourceConfigAccessGate', () => {
     const { getByText, rerender } = render(gate('agent-a'));
     expect(getByText('Agent config')).toBeInTheDocument();
 
-    // B's view-only record was confirmed at 1500, after A opened at 1000.
-    now.mockReturnValue(2000);
+    // B's view-only record was confirmed by request 2, after A opened (at 1)
+    // but before B opened (at 3).
+    mocks.generation = 3;
     mocks.canEditResource = false;
-    mocks.confirmedAt = 1500;
+    mocks.confirmedGeneration = 2;
     rerender(gate('agent-b'));
 
     expect(getByText('Profile loading')).toBeInTheDocument();
     await waitFor(() => expect(mocks.retryAccess).toHaveBeenCalledTimes(1));
     expect(mocks.navigate).not.toHaveBeenCalled();
-    now.mockRestore();
+  });
+
+  // Regression: freshness compared millisecond timestamps with `>=`, so a
+  // sidebar request issued in the same millisecond the gate opened counted as
+  // the gate's own re-check. Generations order requests strictly.
+  it('does not treat a request issued before opening as fresh, even at the same instant', async () => {
+    mocks.generation = 5;
+    mocks.confirmedGeneration = 5;
+
+    const { getByText } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Profile loading')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.retryAccess).toHaveBeenCalledTimes(1));
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 });

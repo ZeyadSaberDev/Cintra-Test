@@ -15,10 +15,20 @@ import { isTrpcErrorCode } from '@/utils/trpcError';
  * the persisted partition without a reload, and a confirmation earned in one
  * scope must not vouch for another scope's cached record of the same id.
  *
- * The value is when the newest confirming request was issued, so a consumer
+ * The value is the generation of the newest confirming request, so a consumer
  * can tell a confirmation it waited for from one earned earlier in the session.
  */
 const confirmedThisSession = new Map<string, number>();
+
+/**
+ * Monotonic counter bumped as each access request is issued. Unlike wall-clock
+ * milliseconds it orders requests causally: a request issued after a consumer
+ * read `getAccessRequestGeneration()` always carries a strictly larger value.
+ */
+let requestGeneration = 0;
+
+/** The generation of the most recently issued access request. */
+export const getAccessRequestGeneration = () => requestGeneration;
 
 /**
  * Resources whose latest refresh this session the server denied (see
@@ -47,6 +57,19 @@ const isAccessDenialError = (error: unknown) =>
   isTrpcErrorCode(error, 'FORBIDDEN') ||
   isTrpcErrorCode(error, 'UNAUTHORIZED');
 
+/** A General-access record stamped with when this client last fetched it. */
+export type FetchedGeneralAccess = Awaited<
+  ReturnType<typeof resourcePermissionService.getGeneralAccess>
+> & {
+  /** Persisted rows age from this time (see `LOCAL_SNAPSHOT_PATTERNS`). */
+  fetchedAt: number;
+};
+
+/** Stamp a server-returned record with its fetch time for the cache TTL. */
+export const stampFetchedAccess = (
+  record: Awaited<ReturnType<typeof resourcePermissionService.getGeneralAccess>>,
+): FetchedGeneralAccess => ({ ...record, fetchedAt: Date.now() });
+
 /** Fetch the General-access record and remember that this session confirmed it. */
 export const fetchGeneralAccess = async (
   resourceType: PermissionResourceType,
@@ -56,7 +79,7 @@ export const fetchGeneralAccess = async (
   // it settles.
   const scope = getCacheScope();
   const key = sessionKey(scope, resourceType, resourceId);
-  const issuedAt = Date.now();
+  const generation = ++requestGeneration;
   let result: Awaited<ReturnType<typeof resourcePermissionService.getGeneralAccess>>;
   try {
     result = await resourcePermissionService.getGeneralAccess(resourceType, resourceId);
@@ -74,15 +97,16 @@ export const fetchGeneralAccess = async (
   // previous user's answer would land in (and persist to) the new user's
   // partition. Reject it; the scope reload revalidates under the new identity.
   if (getCacheScope() !== scope) throw new AccessScopeChangedError();
-  confirmedThisSession.set(key, Math.max(issuedAt, confirmedThisSession.get(key) ?? 0));
+  confirmedThisSession.set(key, Math.max(generation, confirmedThisSession.get(key) ?? 0));
   deniedThisSession.delete(key);
-  return result;
+  return stampFetchedAccess(result);
 };
 
 /** Test-only: forget which records this session has confirmed. */
 export const resetConfirmedAccessForTest = () => {
   confirmedThisSession.clear();
   deniedThisSession.clear();
+  requestGeneration = 0;
 };
 
 /**
@@ -97,7 +121,7 @@ export const resetConfirmedAccessForTest = () => {
  * The access record is persisted (local cache tier), so after a reload edit/use
  * checks resolve from the last server-confirmed value while it revalidates.
  * `isAccessConfirmed` is only true once the current session has re-fetched it;
- * `confirmedAt` is when that confirming request was issued.
+ * `confirmedGeneration` is the request generation that confirmed it.
  * Use it before acting on a denial (redirects); `canManageResource` already
  * requires it, so a cached manager grant the user has since lost never shows
  * management controls.
@@ -135,7 +159,7 @@ export const useResourceAccess = (
     canManageResource: !enabled || (isAccessConfirmed && data?.canManage === true),
     canUseResource:
       !enabled || (!isDenied && (!data ? true : data.canManage || data.accessLevel !== 'view')),
-    confirmedAt: isAccessConfirmed && enabled ? confirmedThisSession.get(key) : undefined,
+    confirmedGeneration: isAccessConfirmed && enabled ? confirmedThisSession.get(key) : undefined,
     isAccessConfirmed,
     // Before the identity resolves, the cache partition is the last-known
     // user's guess: a cold boot with an expired session or an out-of-band

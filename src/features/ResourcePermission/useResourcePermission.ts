@@ -7,7 +7,8 @@ import { resourcePermissionKeys } from '@/libs/swr/keys';
 import type { PermissionResourceType, ResourceAccessLevel } from '@/services/resourcePermission';
 import { resourcePermissionService } from '@/services/resourcePermission';
 
-import { fetchGeneralAccess } from './useResourceAccess';
+import type { FetchedGeneralAccess } from './useResourceAccess';
+import { fetchGeneralAccess, stampFetchedAccess } from './useResourceAccess';
 
 /**
  * State + handlers of the Permission panel: publicity and the workspace
@@ -29,14 +30,16 @@ export const useResourcePermission = (
   const run = useCallback(
     async (
       action: () => Promise<Awaited<ReturnType<typeof resourcePermissionService.getGeneralAccess>>>,
-      optimisticData: Awaited<ReturnType<typeof resourcePermissionService.getGeneralAccess>>,
+      optimisticData: FetchedGeneralAccess,
     ) => {
       const previousData = data;
       setUpdating(true);
       await mutate(optimisticData, false);
       try {
+        // A write's response is a fresh server answer too; stamp it so the
+        // persisted row ages from now rather than counting as expired.
         const result = await action();
-        await mutate(result, false);
+        await mutate(stampFetchedAccess(result), false);
       } catch (e) {
         await mutate(previousData, false);
         console.error('[ResourcePermission]', e);

@@ -66,6 +66,14 @@ export interface CacheProviderOptions {
   localPatternLimits?: Record<string, number>;
   /** SWR key patterns persisted to the localStorage tier. */
   localPatterns?: string[];
+  /**
+   * Local-tier patterns whose rows are server-confirmed snapshots (e.g. access
+   * records), mapped to a reader of the row's own fetch time. Such a row ages
+   * from that time (missing → already expired) instead of being re-stamped by
+   * every unrelated save, and is never adopted from another tab's `storage`
+   * event: that tab's snapshot can be older than what this tab confirmed.
+   */
+  localSnapshotPatterns?: Record<string, (value: unknown) => number | undefined>;
   /** Max localStorage-tier entries, defaults to 50. */
   maxLocalEntries?: number;
   /** Error callback */
@@ -162,6 +170,7 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     isEphemeralScope,
     localPatterns = [],
     localPatternLimits = {},
+    localSnapshotPatterns = {},
     ttl = 7 * 24 * 60 * 60 * 1000, // 7 days
     maxLocalEntries = 50,
     version = '1.0.0',
@@ -246,6 +255,9 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     return entries.filter((entry) => kept.has(entry));
   };
 
+  const snapshotFetchedAtOf = (key: string) =>
+    Object.entries(localSnapshotPatterns).find(([pattern]) => key.includes(pattern))?.[1];
+
   const saveLocal = () => {
     if (!cacheMapInstance) return;
     if (!isPersistableScope()) return;
@@ -255,9 +267,11 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
         .filter(([k]) => matchesPattern(k, localPatterns))
         .map(([k, value]) => [k, toPersisted(value)] as const)
         .filter(([, data]) => data !== undefined);
-      const entries = capLocalEntries(persisted).map(
-        ([k, data]) => [k, { data, timestamp: Date.now(), version } as CacheEntry] as const,
-      );
+      const entries = capLocalEntries(persisted).map(([k, data]) => {
+        const fetchedAtOf = snapshotFetchedAtOf(k);
+        const timestamp = fetchedAtOf ? (fetchedAtOf(data) ?? 0) : Date.now();
+        return [k, { data, timestamp, version } as CacheEntry] as const;
+      });
 
       const serialized = JSON.stringify(entries);
       const sizeInMB = new Blob([serialized]).size / (1024 * 1024);
@@ -464,7 +478,9 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
       try {
         const parsed: [string, CacheEntry][] = JSON.parse(event.newValue);
         parsed.forEach(([key, entry]) => {
-          if (matchesPattern(key, localPatterns)) cacheMapInstance!.hydrate([[key, entry.data]]);
+          if (matchesPattern(key, localPatterns) && !snapshotFetchedAtOf(key)) {
+            cacheMapInstance!.hydrate([[key, entry.data]]);
+          }
         });
       } catch (error) {
         onError(error as Error);
@@ -588,6 +604,18 @@ export const LOCAL_PATTERN_LIMITS: Record<string, number> = {
 };
 
 /**
+ * Local-tier snapshot rows (see `localSnapshotPatterns`): an access record
+ * expires 7 days after its own last successful fetch, so a resource the user
+ * stopped opening cannot keep a revoked grant alive through unrelated writes.
+ */
+export const LOCAL_SNAPSHOT_PATTERNS: Record<string, (value: unknown) => number | undefined> = {
+  'resourcePermission:': (value) => {
+    const fetchedAt = (value as { data?: { fetchedAt?: unknown } } | undefined)?.data?.fetchedAt;
+    return typeof fetchedAt === 'number' ? fetchedAt : undefined;
+  },
+};
+
+/**
  * Provider factory for SWRConfig.
  *
  * @param getScope resolver for the current identity scope. Evaluated lazily so
@@ -613,6 +641,7 @@ export const swrCacheProvider = (
     isEphemeralScope: () => !isScopeTrusted(),
     localPatternLimits: LOCAL_PATTERN_LIMITS,
     localPatterns: [...CACHE_TIERS.local],
+    localSnapshotPatterns: LOCAL_SNAPSHOT_PATTERNS,
     onScopeHydrated,
     // Governs the localStorage tier only (recents-style shells); the IndexedDB
     // tier (messages, topics, …) never expires. 7 days is plenty for recents.
