@@ -19,9 +19,9 @@ interface UseGoalAgentModelParams {
 }
 
 /**
- * The goal's main agent and the model it plans with: what the pickers show and
- * what a pick writes. The model falls back to the agent's own until the goal
- * overrides it.
+ * The goal's main agent, the model it plans with and the agent that does its
+ * Tasks: what the pickers show and what a pick writes. The model falls back to
+ * the agent's own until the goal overrides it.
  */
 export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelParams) => {
   const navigate = useWorkspaceAwareNavigate();
@@ -32,6 +32,11 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
   );
   const setGoalAgent = useGoalStore((s) => s.setGoalAgent);
   const setGoalModel = useGoalStore((s) => s.setGoalModel);
+  const setGoalTaskAgent = useGoalStore((s) => s.setGoalTaskAgent);
+  // Unset means the main agent does the goal's Tasks itself.
+  const taskAgentId = useGoalStore(
+    (s) => goalSelectors.goalGraph(goalId)(s)?.goal.config?.taskAgentId,
+  );
   const heterogeneousType = useHomeStore(
     (s) => homeAgentListSelectors.getAgentById(agentId ?? '')(s)?.heterogeneousType,
   );
@@ -68,11 +73,24 @@ export const useGoalAgentModel = ({ goalId, routeAgentId }: UseGoalAgentModelPar
     }
   };
 
+  const changeTaskAgent = async (next: string | null) => {
+    // Naming the main agent is the same as clearing: it does its own Tasks.
+    const executor = next && next !== agentId ? next : null;
+    if (executor === (taskAgentId ?? null)) return;
+    try {
+      await setGoalTaskAgent(goalId, executor);
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+
   return {
     agentId: agentId ?? undefined,
     changeAgent,
     changeModel,
+    changeTaskAgent,
     heterogeneousType,
+    taskAgentId,
     model: {
       model: goalModel || agentModel || '',
       provider: goalProvider || agentProvider || '',

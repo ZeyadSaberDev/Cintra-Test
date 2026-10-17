@@ -344,6 +344,12 @@ export class GoalActionImpl {
     ]);
   };
 
+  /** Unfinished Tasks move with the executor, so their rows on the page re-read too. */
+  setGoalTaskAgent = async (goalId: string, agentId: string | null): Promise<void> => {
+    await goalService.setTaskAgent(goalId, agentId);
+    await this.refreshGoalGraph(goalId);
+  };
+
   setGoalModel = async (
     goalId: string,
     modelConfig: { model: string; provider: string } | null,

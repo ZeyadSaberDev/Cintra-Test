@@ -7,10 +7,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useGoalAgentModel } from './useGoalAgentModel';
 
 const mocks = vi.hoisted(() => ({
-  config: {} as { model?: string; provider?: string },
+  config: {} as { model?: string; provider?: string; taskAgentId?: string },
   navigate: vi.fn(),
   setGoalAgent: vi.fn(),
   setGoalModel: vi.fn(),
+  setGoalTaskAgent: vi.fn(),
 }));
 
 vi.mock('@/store/goal', () => ({
@@ -18,7 +19,11 @@ vi.mock('@/store/goal', () => ({
     goalGraph: () => () => ({ goal: { agentId: 'agt_old', config: mocks.config } }),
   },
   useGoalStore: (selector: (s: any) => unknown) =>
-    selector({ setGoalAgent: mocks.setGoalAgent, setGoalModel: mocks.setGoalModel }),
+    selector({
+      setGoalAgent: mocks.setGoalAgent,
+      setGoalModel: mocks.setGoalModel,
+      setGoalTaskAgent: mocks.setGoalTaskAgent,
+    }),
 }));
 
 vi.mock('@/store/agent', () => ({
@@ -88,5 +93,27 @@ describe('useGoalAgentModel', () => {
 
     await act(() => result.current.changeModel({ model: 'gpt-4o-mini', provider: 'openai' }));
     expect(mocks.setGoalModel).toHaveBeenLastCalledWith('goal_1', null);
+  });
+
+  it('routes Tasks to a dedicated executor, and back when the main agent is picked', async () => {
+    const { result, rerender } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+
+    await act(() => result.current.changeTaskAgent('agt_exec'));
+    expect(mocks.setGoalTaskAgent).toHaveBeenLastCalledWith('goal_1', 'agt_exec');
+
+    mocks.config = { taskAgentId: 'agt_exec' };
+    rerender();
+    expect(result.current.taskAgentId).toBe('agt_exec');
+
+    await act(() => result.current.changeTaskAgent('agt_old'));
+    expect(mocks.setGoalTaskAgent).toHaveBeenLastCalledWith('goal_1', null);
+  });
+
+  it('skips the write when the executor does not change', async () => {
+    const { result } = renderHook(() => useGoalAgentModel({ goalId: 'goal_1' }));
+
+    // No dedicated executor yet, so picking the main agent changes nothing.
+    await act(() => result.current.changeTaskAgent('agt_old'));
+    expect(mocks.setGoalTaskAgent).not.toHaveBeenCalled();
   });
 });

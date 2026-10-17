@@ -135,6 +135,10 @@ class GoalService {
   setAgent = async (id: string, agentId: string) =>
     lambdaClient.goal.setAgent.mutate({ agentId, id });
 
+  /** Route the goal's Tasks to a dedicated executor; `null` hands them back to the goal agent. */
+  setTaskAgent = async (id: string, agentId: string | null) =>
+    lambdaClient.goal.setTaskAgent.mutate({ agentId, id });
+
   /** The model the goal agent plans with; `null` falls back to the agent's own. */
   setModel = async (id: string, modelConfig: { model: string; provider: string } | null) =>
     lambdaClient.goal.setModel.mutate({ id, modelConfig });

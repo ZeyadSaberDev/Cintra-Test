@@ -287,11 +287,6 @@ const GoalDetailPage = memo<GoalDetailPageProps>(({ agentId, goalId }) => {
                       {t('goalProcess.draft')}
                     </Text>
                   )}
-                  {canPause && paused && (
-                    <Text fontSize={12} type={'secondary'}>
-                      {t('goalProcess.paused')}
-                    </Text>
-                  )}
                 </Flexbox>
               )}
               {/* North-star strip reads with the requirement document — the
