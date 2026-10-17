@@ -7,6 +7,8 @@ import { resourcePermissionKeys } from '@/libs/swr/keys';
 import type { PermissionResourceType, ResourceAccessLevel } from '@/services/resourcePermission';
 import { resourcePermissionService } from '@/services/resourcePermission';
 
+import { fetchGeneralAccess } from './useResourceAccess';
+
 /**
  * State + handlers of the Permission panel: publicity and the workspace
  * General-access level (Notion-style Share).
@@ -21,7 +23,7 @@ export const useResourcePermission = (
 
   const { data, error, isLoading, mutate } = useClientDataSWR(
     resourceId ? resourcePermissionKeys.generalAccess(resourceType, resourceId) : null,
-    () => resourcePermissionService.getGeneralAccess(resourceType, resourceId!),
+    () => fetchGeneralAccess(resourceType, resourceId!),
   );
 
   const run = useCallback(

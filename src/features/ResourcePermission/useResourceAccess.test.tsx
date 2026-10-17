@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResourceGeneralAccess } from '@/services/resourcePermission';
 
-import { useResourceAccess } from './useResourceAccess';
+import { resetConfirmedAccessForTest, useResourceAccess } from './useResourceAccess';
 
 const testState = vi.hoisted(() => ({
   data: undefined as ResourceGeneralAccess | undefined,
+  fetcher: undefined as (() => Promise<ResourceGeneralAccess>) | undefined,
+  getGeneralAccess: vi.fn(),
   hasActiveWorkspace: true,
   isValidating: false,
 }));
@@ -15,31 +17,51 @@ vi.mock('@/business/client/hooks/useHasActiveWorkspace', () => ({
   useHasActiveWorkspace: () => testState.hasActiveWorkspace,
 }));
 
-vi.mock('@/libs/swr', () => ({
-  useClientDataSWR: () => ({
-    data: testState.data,
-    error: undefined,
-    isLoading: false,
-    isValidating: testState.isValidating,
-    mutate: vi.fn(),
-  }),
+vi.mock('@/services/resourcePermission', () => ({
+  resourcePermissionService: { getGeneralAccess: testState.getGeneralAccess },
 }));
+
+vi.mock('@/libs/swr', () => ({
+  useClientDataSWR: (_key: unknown, fetcher: () => Promise<ResourceGeneralAccess>) => {
+    testState.fetcher = fetcher;
+    return {
+      data: testState.data,
+      error: undefined,
+      isLoading: false,
+      isValidating: testState.isValidating,
+      mutate: vi.fn(),
+    };
+  },
+}));
+
+const record = (overrides: Partial<ResourceGeneralAccess>): ResourceGeneralAccess => ({
+  accessLevel: 'edit',
+  canManage: false,
+  creatorId: 'creator',
+  generalAccess: 'editor',
+  visibility: 'public',
+  ...overrides,
+});
+
+/** Simulate SWR settling a revalidation: the fetcher resolves into `data`. */
+const revalidate = async (fresh: ResourceGeneralAccess) => {
+  testState.getGeneralAccess.mockResolvedValueOnce(fresh);
+  testState.data = await testState.fetcher!();
+  testState.isValidating = false;
+};
 
 describe('useResourceAccess', () => {
   beforeEach(() => {
+    resetConfirmedAccessForTest();
     testState.data = undefined;
+    testState.fetcher = undefined;
+    testState.getGeneralAccess.mockReset();
     testState.hasActiveWorkspace = true;
     testState.isValidating = false;
   });
 
-  it('resolves from cached access while it revalidates, but does not confirm it yet', () => {
-    testState.data = {
-      accessLevel: 'edit',
-      canManage: false,
-      creatorId: 'creator',
-      generalAccess: 'editor',
-      visibility: 'public',
-    };
+  it('resolves from cached access while it revalidates, but does not confirm it yet', async () => {
+    testState.data = record({});
     testState.isValidating = true;
 
     const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
@@ -50,20 +72,49 @@ describe('useResourceAccess', () => {
       isAccessResolved: true,
     });
 
-    testState.isValidating = false;
+    await revalidate(record({}));
     rerender();
 
     expect(result.current.isAccessConfirmed).toBe(true);
   });
 
-  it('does not apply view-only Member Permissions to an Agent author or admin', () => {
-    testState.data = {
-      accessLevel: 'view',
-      canManage: true,
-      creatorId: 'creator',
-      generalAccess: 'viewer',
-      visibility: 'public',
-    };
+  // Regression: a persisted `canManage: true` from an earlier session rendered
+  // management controls before the re-check, even if the user had since been
+  // demoted. Management must stay fail-closed until this session confirms it.
+  it('keeps management hidden for a cached manager grant until this session re-confirms it', async () => {
+    testState.data = record({ canManage: true });
+    testState.isValidating = true;
+
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    expect(result.current).toMatchObject({
+      canEditResource: true,
+      canManageResource: false,
+      isAccessConfirmed: false,
+    });
+
+    await revalidate(record({ canManage: false }));
+    rerender();
+
+    expect(result.current).toMatchObject({ canManageResource: false, isAccessConfirmed: true });
+  });
+
+  it('grants management once this session has re-confirmed the manager grant', async () => {
+    testState.data = record({ canManage: true });
+    testState.isValidating = true;
+
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+    expect(result.current.canManageResource).toBe(false);
+
+    await revalidate(record({ canManage: true }));
+    rerender();
+
+    expect(result.current.canManageResource).toBe(true);
+  });
+
+  it('does not apply view-only Member Permissions to an Agent author or admin', async () => {
+    renderHook(() => useResourceAccess('agent', 'agent-1'));
+    await revalidate(record({ accessLevel: 'view', canManage: true, generalAccess: 'viewer' }));
 
     const { result } = renderHook(() => useResourceAccess('agent', 'agent-1'));
 
@@ -74,14 +125,9 @@ describe('useResourceAccess', () => {
     });
   });
 
-  it('still applies view-only Member Permissions to an ordinary member', () => {
-    testState.data = {
-      accessLevel: 'view',
-      canManage: false,
-      creatorId: 'creator',
-      generalAccess: 'viewer',
-      visibility: 'public',
-    };
+  it('still applies view-only Member Permissions to an ordinary member', async () => {
+    renderHook(() => useResourceAccess('agent', 'agent-1'));
+    await revalidate(record({ accessLevel: 'view', canManage: false, generalAccess: 'viewer' }));
 
     const { result } = renderHook(() => useResourceAccess('agent', 'agent-1'));
 

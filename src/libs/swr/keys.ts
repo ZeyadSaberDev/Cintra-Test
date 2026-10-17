@@ -22,13 +22,10 @@ import { type ConversationContext } from '@lobechat/types';
 
 import { agentDocumentSWRKeys } from '@/services/document/swrKeys';
 
-type KeyFactory<A extends unknown[]> = ((...args: A) => readonly unknown[]) & { root: string };
+import { def } from './defineKey';
+import { resourcePermissionKeys } from './resourcePermissionKeys';
 
-/** Define a key factory carrying its namespace root (for `mutate` matchers). */
-const def = <A extends unknown[]>(
-  root: string,
-  build: (...args: A) => readonly unknown[],
-): KeyFactory<A> => Object.assign(build, { root });
+export { resourcePermissionKeys };
 
 interface LocalFilePreviewKeyParams {
   accept?: 'image';
@@ -1043,19 +1040,6 @@ export const resourceKeys = {
     params,
     workspaceId,
   ]),
-};
-// Persisted in the local tier (sync first paint) so a gated config page can
-// open from the last confirmed access while it revalidates. The server still
-// enforces every write; the client only uses this to decide what to render.
-export const resourcePermissionKeys = {
-  generalAccess: def(
-    'resourcePermission:generalAccess',
-    (resourceType: string, resourceId: string) => [
-      'resourcePermission:generalAccess',
-      resourceType,
-      resourceId,
-    ],
-  ),
 };
 export const recommendationsKeys = {
   heteroDetections: def('recommendations:heteroDetections', () => [
