@@ -8,7 +8,12 @@
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_search') THEN
-    CREATE EXTENSION IF NOT EXISTS pg_search;
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pg_search;
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        RAISE NOTICE 'pg_search cannot be enabled on this database; skipping BM25 search setup';
+    END;
   ELSE
     RAISE NOTICE 'pg_search is not available on this database; skipping BM25 search setup';
   END IF;
