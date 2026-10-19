@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { getFtsSearchConfig } from '../../packages/env/src/ftsSearch';
@@ -21,6 +23,17 @@ const fakeCatalog =
       : { rows: state.indexes.map((index_name) => ({ index_name })) };
 
 describe('pgSearchGuard', () => {
+  it('allows migrations to continue when a managed database rejects optional pg_search', async () => {
+    const migration = await readFile(
+      new URL('../../packages/database/migrations/0090_enable_pg_search.sql', import.meta.url),
+      'utf8',
+    );
+
+    expect(migration).toMatch(
+      /EXCEPTION\s+WHEN insufficient_privilege THEN\s+RAISE NOTICE .*pg_search cannot be enabled/s,
+    );
+  });
+
   it('uses the same default provider as the application env', () => {
     vi.stubEnv('FTS_SEARCH_PROVIDER', undefined);
     expect(getFtsSearchConfig().FTS_SEARCH_PROVIDER).toBe(DEFAULT_FTS_SEARCH_PROVIDER);
